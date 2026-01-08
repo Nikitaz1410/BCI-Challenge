@@ -260,7 +260,13 @@ class SAEModel:
             raise RuntimeError("Model is not trained or loaded. Call `fit` or `load` first.")
 
         denoised = self._denoise(signals, day_labels=day_labels)
-        return self._csp_clf.predict(np.float64(denoised)), self._csp_clf.predict_proba(np.float64(denoised))
+        preds = self._csp_clf.predict(np.float64(denoised))
+        # Not all sklearn classifiers expose predict_proba.
+        if hasattr(self._csp_clf, "predict_proba"):
+            probs = self._csp_clf.predict_proba(np.float64(denoised))
+        else:
+            probs = None
+        return preds, probs
 
     # ------------------------- Persistence helpers ---------------------- #
 
@@ -288,7 +294,17 @@ class SAEModel:
         """
         Restore a model previously saved with `save`.
         """
-        checkpoint = torch.load(path, map_location="cpu")
+        # Allow sklearn pipeline objects inside the checkpoint (CSP+SVM).
+        try:
+            from torch.serialization import add_safe_globals
+            from sklearn.pipeline import Pipeline
+
+            add_safe_globals([Pipeline])
+        except Exception:
+            # If safe globals aren't available, fall back and hope default loading works.
+            pass
+
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         adjustments = checkpoint["adjustments"]
         meta = checkpoint["meta"]
         csp_clf = checkpoint.get("csp_clf")
