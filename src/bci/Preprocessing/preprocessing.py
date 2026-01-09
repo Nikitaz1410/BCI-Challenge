@@ -247,20 +247,33 @@ def create_epochs(
         epochs.pick(motor_channels)
     
     # Map labels to standard format: {0: rest, 1: right, 2: left}
-    if "CIRCLE ONSET" in event_dict:
-        rest_id = event_dict["CIRCLE ONSET"]
-        right_id = event_dict.get("ARROW RIGHT ONSET", None)
-        left_id = event_dict.get("ARROW LEFT ONSET", None)
-        
+    # Handle different marker naming conventions
+    rest_markers = ["CIRCLE ONSET", "CIRCLE", "rest"]
+    right_markers = ["ARROW RIGHT ONSET", "ARROW RIGHT", "right_hand"]
+    left_markers = ["ARROW LEFT ONSET", "ARROW LEFT", "left_hand"]
+    
+    rest_id = None
+    right_id = None
+    left_id = None
+    
+    for marker_name in event_dict.keys():
+        if marker_name in rest_markers:
+            rest_id = event_dict[marker_name]
+        elif marker_name in right_markers:
+            right_id = event_dict[marker_name]
+        elif marker_name in left_markers:
+            left_id = event_dict[marker_name]
+    
+    if rest_id is not None or right_id is not None or left_id is not None:
         y = epochs.events[:, -1].copy()
-        y[y == rest_id] = 0  # Rest
+        if rest_id is not None:
+            y[y == rest_id] = 0
         if right_id is not None:
-            y[y == right_id] = 1  # Right hand
+            y[y == right_id] = 1
         if left_id is not None:
-            y[y == left_id] = 2  # Left hand
+            y[y == left_id] = 2
         epochs.events[:, -1] = y
         
-        # Update event_id for consistency
         epochs.event_id = {"rest": 0, "right": 1, "left": 2}
     
     return epochs, event_dict
@@ -609,6 +622,114 @@ def process_offline(
     
     return epochs, ar, asr
 
+
+# ============================================================================
+# WINDOW EXTRACTION (Overlapping Windows from Epochs)
+# ============================================================================
+
+def extract_overlapping_windows(
+    eeg: np.ndarray,
+    window_size: int = 250,
+    step_size: int = 16
+) -> np.ndarray:
+    """
+    Extract overlapping time windows from a single epoch/trial.
+    
+    Parameters:
+    -----------
+    eeg : np.ndarray
+        Shape (n_channels, n_samples) - single epoch/trial
+    window_size : int
+        Window length in samples (e.g., 250 = 1.0s at 250 Hz)
+    step_size : int
+        Hop size in samples (e.g., 16 samples = 0.064s at 250 Hz)
+    
+    Returns:
+    --------
+    windows : np.ndarray
+        Shape (nwindows, n_channels, window_size) - extracted windows
+    
+    Example:
+    --------
+    # From daria.py workflow:
+    # After epoching, extract overlapping windows from each epoch
+    for epoch in epochs:
+        windows = extract_overlapping_windows(epoch.get_data()[0], window_size=160, step_size=32)
+    """
+    n_channels, n_samples = eeg.shape
+    
+    window_length_samples = int(window_size)
+    window_shift_samples = int(step_size)
+    
+    nwindows = int((n_samples - window_length_samples) / window_shift_samples) + 1
+    
+    window_starts = np.arange(
+        0, n_samples - window_length_samples + 1, window_shift_samples
+    ).astype(int)
+    window_ends = window_starts + window_length_samples
+    
+    windows = np.zeros((nwindows, n_channels, window_length_samples))
+    
+    for window_id in range(nwindows):
+        start = window_starts[window_id]
+        end = window_ends[window_id]
+        window = eeg[:, start:end]
+        windows[window_id, :, :] = window
+    
+    return windows
+
+
+def extract_windows_from_epochs(
+    epochs: mne.Epochs,
+    window_size: int = 250,
+    step_size: int = 16
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Extract overlapping windows from all epochs and return windows with labels and trial IDs.
+    
+    Parameters:
+    -----------
+    epochs : mne.Epochs
+        Epochs object (already processed/cleaned)
+    window_size : int
+        Window length in samples
+    step_size : int
+        Hop size in samples
+    
+    Returns:
+    --------
+    windowed_trials : np.ndarray
+        Shape (n_total_windows, n_channels, window_size) - all extracted windows
+    windowed_labels : np.ndarray
+        Shape (n_total_windows,) - labels for each window
+    trial_ids : np.ndarray
+        Shape (n_total_windows,) - trial/epoch ID for each window (for grouped splits)
+    
+    Example:
+    --------
+    epochs, ar, asr = process_offline(raw, markers, config)
+    windows, labels, trial_ids = extract_windows_from_epochs(epochs, window_size=160, step_size=32)
+    """
+    windowed_trials = []
+    windowed_labels = []
+    trial_ids = []
+    
+    data = epochs.get_data()  # (n_epochs, n_channels, n_samples)
+    labels = epochs.events[:, -1]  # (n_epochs,)
+    
+    for i, epoch_data in enumerate(data):
+        windows = extract_overlapping_windows(epoch_data, window_size=window_size, step_size=step_size)
+        windowed_trials.append(windows)
+        windowed_labels.extend([labels[i]] * windows.shape[0])
+        trial_ids.extend([i] * windows.shape[0])
+    
+    windowed_trials = np.concatenate(windowed_trials, axis=0)
+    windowed_labels = np.array(windowed_labels)
+    trial_ids = np.array(trial_ids)
+    
+    return windowed_trials, windowed_labels, trial_ids
+
+
 # ============================================================================
 # ONLINE PROCESSING (Real-time)
 # ============================================================================
@@ -863,9 +984,11 @@ def process_window_online(
     )
     
     if not is_bad:
+        # Reshape for model: [C, T] -> [1, C, T]
+        window_for_model = preprocessing.prepare_window_for_model(window_clean)
+        
         # Use window for prediction
-        features = extract_features(window_clean)
-        prediction = model.predict(features)
+        predictions, probabilities = model.infer(window_for_model)
     """
     # Step 1: Filter (causal - must be fast)
     window_filtered = filter_online(
@@ -896,6 +1019,51 @@ def process_window_online(
         )
     
     return window_clean, False
+
+
+def prepare_window_for_model(
+    window: np.ndarray
+) -> np.ndarray:
+    """
+    Reshape a processed window from [C, T] to [1, C, T] for model inference.
+    
+    Parameters:
+    -----------
+    window : np.ndarray
+        Processed window with shape (n_channels, n_samples) = [C, T]
+        This is the output from process_window_online()
+    
+    Returns:
+    --------
+    window_batch : np.ndarray
+        Window reshaped for model input with shape (1, n_channels, n_samples) = [1, C, T]
+        Ready to be passed to model.infer() or model.predict()
+    
+    Example:
+    --------
+    window_processed, is_bad = preprocessing.process_window_online(
+        window=raw_window,
+        config=config,
+        ar=ar,
+        sfreq=250.0
+    )
+    
+    if not is_bad:
+        window_for_model = preprocessing.prepare_window_for_model(window_processed)
+        predictions, probabilities = model.infer(window_for_model)
+    """
+    if window.ndim != 2:
+        raise ValueError(
+            f"Expected 2D window with shape [C, T], got shape {window.shape} "
+            f"with {window.ndim} dimensions. "
+            "Did you already reshape it? Or did preprocessing fail?"
+        )
+    
+    window_batch = window[np.newaxis, :, :]
+    
+    return window_batch
+
+
 # ============================================================================
 # EXPORTS
 # ============================================================================
@@ -908,12 +1076,16 @@ __all__ = [
     "clean_with_asr",
     "load_asr",
     "process_offline",
+    # Windowing functions
+    "extract_overlapping_windows",
+    "extract_windows_from_epochs",
     # Online functions
     "filter_online",
     "create_sliding_window_online",
     "handle_bad_window_online",
     "clean_window_asr_online",
     "process_window_online",
+    "prepare_window_for_model",
 ]
 
 

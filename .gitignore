@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 *.DS_Store
 data
 resources/models
@@ -218,3 +219,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local development files (not for version control)
+src/bci/2_preprocessing/daria.py
