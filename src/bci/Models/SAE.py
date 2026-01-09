@@ -194,10 +194,12 @@ class SAEModel:
         mode: str = "supervised",
         model_adjustments: Optional[Dict[str, Any]] = None,
         filters: Optional[list[int]] = None,
+        classifier: str = "csp-lda",
     ) -> None:
         self.mode = mode
         self.model_adjustments = model_adjustments
         self.filters = filters or SAE_HYPER_PARAMS.get("cnvl_filters", [8, 16, 32])
+        self.classifier = classifier
 
         self._denoiser: Optional[Denoiser] = None
         self._meta: Dict[str, Any] = {}
@@ -234,6 +236,7 @@ class SAEModel:
             "n_task_labels": dataset.n_task_labels,
             "n_days_labels": dataset.n_days_labels,
             "filters": self.filters,
+            "classifier": self.classifier,
         }
 
         self._denoiser = Denoiser(self.model_adjustments, self.mode)
@@ -241,7 +244,13 @@ class SAEModel:
 
         # Train CSP+SVM on denoised signals for end-to-end classification.
         denoised = self._denoise(signals, day_labels=day_labels)
-        _, clf = csp_score(np.float64(denoised), np.asarray(task_labels), cv_N=5, classifier=False)
+        _, clf = csp_score(
+            np.float64(denoised),
+            np.asarray(task_labels),
+            cv_N=5,
+            classifier=False,
+            classifier_type=self.classifier,
+        )
         self._csp_clf = clf
         return self
 
@@ -309,9 +318,15 @@ class SAEModel:
         meta = checkpoint["meta"]
         csp_clf = checkpoint.get("csp_clf")
         filters = meta.get("filters", SAE_HYPER_PARAMS.get("cnvl_filters", [8, 16, 32]))
+        classifier = meta.get("classifier", "csp-lda")
         mode = mode or checkpoint.get("mode", "supervised")
 
-        instance = cls(mode=mode, model_adjustments=adjustments, filters=filters)
+        instance = cls(
+            mode=mode,
+            model_adjustments=adjustments,
+            filters=filters,
+            classifier=classifier,
+        )
         instance._meta = meta
         instance._csp_clf = csp_clf
 

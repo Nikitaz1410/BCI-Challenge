@@ -6,12 +6,13 @@ import sklearn
 import lightgbm as lgb
 import matplotlib.pyplot as plt
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import cross_val_score
 from torch.utils.data import Dataset
 
 
-def csp_score(signal, labels, cv_N = 5, classifier = False):
+def csp_score(signal, labels, cv_N = 5, classifier = False, classifier_type: str = "lda"):
     
     # Set verbose to 0
     mne.set_log_level(verbose='WARNING', return_old_level=False, add_frames=None)
@@ -25,14 +26,23 @@ def csp_score(signal, labels, cv_N = 5, classifier = False):
         return acc
     
     else:
-        # Assemble a classifier
-        svm = sklearn.svm.SVC()
-        lda = LinearDiscriminantAnalysis()
-#         lda = sklearn.ensemble.RandomForestClassifier()
-        csp = mne.decoding.CSP(n_components=4, reg=None, log=True, norm_trace=True)
-        # Use scikit-learn Pipeline with cross_val_score function
-        #clf = Pipeline([('CSP', csp), ('LDA', lda)])
-        clf = Pipeline([('CSP', csp), ('SVM', svm)])
+        # Assemble a classifier based on the requested backend
+        classifier_type = str(classifier_type or "lda").lower()
+        csp = mne.decoding.CSP(n_components=50, reg=None, log=True, norm_trace=True)
+
+        if classifier_type in ("lda", "csp-lda"):
+            base_clf = LinearDiscriminantAnalysis()
+        elif classifier_type in ("svm", "csp-svm"):
+            base_clf = sklearn.svm.SVC(probability=True)
+        elif classifier_type in ("logreg", "lr", "csp-logreg", "csp-lr"):
+            base_clf = LogisticRegression(max_iter=1000)
+        else:
+            raise ValueError(
+                f"Unsupported classifier_type '{classifier_type}'. "
+                "Expected one of ['csp-lda', 'csp-svm', 'csp-logreg']."
+            )
+
+        clf = Pipeline([('CSP', csp), ('clf', base_clf)])
         scores = cross_val_score(clf, signal, labels, cv=cv_N, n_jobs=5)
         _ = clf.fit(signal, labels)
         return np.mean(scores), clf
