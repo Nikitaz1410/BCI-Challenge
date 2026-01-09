@@ -1,0 +1,47 @@
+# Signal processing parameters
+window_size: 250
+step_size: 32
+fs: 160.0
+
+# EEG Hardware/Channel setup
+channels:
+  - "Fp1"
+  - "Fp2"
+  - "T8"
+  - "F4"
+  - "Fz"
+  - "F3"
+  - "T7"
+  - "C4"
+  - "Cz"
+  - "C3"
+  - "P4"
+  - "Pz"
+  - "P3"
+  - "PO8"
+  - "Oz"
+  - "PO7"
+
+# Marker/Trial definitions (in seconds)
+marker_durations:
+  - 3
+  - 1.5
+  - 3.5
+
+# Filter design (Causal IIR Butterworth band-pass 8-30 Hz)
+frequencies:
+  - 8.0
+  - 30.0
+order: 4
+worN: 4096
+
+# Machine Learning
+classes:
+  - 0
+  - 1
+
+# Train/Validation/Test split ratios
+train_size: 1.0
+val_size: 0.1 # From the already split train-test
+test_size: 0 # From 100%
+random_state: 42
