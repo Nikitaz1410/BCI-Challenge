@@ -6,7 +6,7 @@ exposes a light-weight API that can be reused by both the offline and the
 upcoming online BCI pipelines:
 
 - `SAEModel.fit(...)` trains from numpy arrays.
-- `SAEModel.infer(...)` denoises/infers from numpy arrays.
+- `SAEModel.predict(...)` predicts from numpy arrays.
 - `SAEModel.save(...)` and `SAEModel.load(...)` persist and restore models.
 
 The heavy lifting (architecture, lightning training loop, datasets) remains
@@ -72,7 +72,7 @@ def _conv_transpose1d_length(
     return (length - 1) * stride - 2 * padding + kernel + output_padding
 
 
-def _infer_adjustments(signal_length: int, filters: Optional[list[int]] = None) -> Dict[str, Any]:
+def _predict_adjustments(signal_length: int, filters: Optional[list[int]] = None) -> Dict[str, Any]:
     """
     Brute-force a set of paddings/output-paddings that give us a
     reconstruction length equal to the input length.
@@ -123,7 +123,7 @@ def _infer_adjustments(signal_length: int, filters: Optional[list[int]] = None) 
                         }
 
     raise ValueError(
-        "Could not infer padding/output_padding that preserves signal length. "
+        "Could not predict padding/output_padding that preserves signal length. "
         "Please provide `model_adjustments` explicitly."
     )
 
@@ -184,7 +184,7 @@ class SAEModel:
 
     Usage:
         model = SAEModel().fit(signals, task_labels, day_labels)
-        denoised = model.infer(noisy_signals, day_labels)
+        denoised = model.predict(noisy_signals, day_labels)
         model.save("/path/to/ckpt.pt")
         restored = SAEModel.load("/path/to/ckpt.pt")
     """
@@ -205,7 +205,7 @@ class SAEModel:
         self._meta: Dict[str, Any] = {}
         self._csp_clf = None
 
-    # ------------------------- Training & inference --------------------- #
+    # ------------------------- Training & predictence --------------------- #
 
     def fit(
         self,
@@ -254,7 +254,7 @@ class SAEModel:
         self._csp_clf = clf
         return self
 
-    def infer(
+    def predict(
         self,
         signals: np.ndarray,
         day_labels: Optional[np.ndarray] = None,
@@ -381,11 +381,11 @@ def train_sae(
     )
 
 
-def infer_sae(model: SAEModel, signals: np.ndarray, day_labels: Optional[np.ndarray] = None) -> np.ndarray:
+def predict_sae(model: SAEModel, signals: np.ndarray, day_labels: Optional[np.ndarray] = None) -> np.ndarray:
     """
-    Run inference using an existing SAEModel.
+    Run predictence using an existing SAEModel.
     """
-    return model.infer(signals=signals, day_labels=day_labels)
+    return model.predict(signals=signals, day_labels=day_labels)
 
 
 def save_sae(model: SAEModel, path: str) -> str:
