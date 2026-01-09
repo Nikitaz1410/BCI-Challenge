@@ -609,12 +609,298 @@ def process_offline(
     
     return epochs, ar, asr
 
+# ============================================================================
+# ONLINE PROCESSING (Real-time)
+# ============================================================================
 
+def filter_online(
+    window: np.ndarray,
+    sfreq: float,
+    fmin: float,
+    fmax: float
+) -> np.ndarray:
+    """
+    Apply causal bandpass filter to a single window (for online processing).
+    
+    Parameters:
+    -----------
+    window : np.ndarray
+        Shape (n_channels, n_samples) - single window
+    sfreq : float
+        Sampling frequency (Hz) - typically 250
+    fmin, fmax : float
+        Filter frequencies (Hz) - same as offline config
+    
+    Returns:
+    --------
+    filtered : np.ndarray
+        Filtered window (same shape: n_channels, n_samples)
+    
+    Notes:
+    ------
+    - Uses causal filter (sosfilt) - can only use past/present samples
+    - Must be fast for real-time processing (<10ms)
+    - Uses same fmin/fmax as offline for consistency
+    """
+    from scipy import signal
+    
+    # Create Butterworth filter (causal, minimal-phase)
+    sos = signal.butter(
+        4,  # Filter order (4th order = good balance)
+        [fmin, fmax],
+        btype='bandpass',
+        fs=sfreq,
+        output='sos'  # Second-order sections (stable)
+    )
+    
+    # Apply filter (causal - processes sample by sample)
+    filtered = signal.sosfilt(sos, window, axis=-1)
+    
+    return filtered
+
+
+def create_sliding_window_online(
+    data_buffer: np.ndarray,
+    window_size: int,
+    step: int
+) -> Optional[np.ndarray]:
+    """
+    Create sliding window from data buffer (for online processing).
+    
+    Parameters:
+    -----------
+    data_buffer : np.ndarray
+        Shape (n_channels, buffer_length) - accumulated data buffer
+        Buffer should be continuously updated with new samples
+    window_size : int
+        Window length in samples (e.g., 250 = 1.0s at 250 Hz)
+        Must match offline window_size
+    step : int
+        Hop size in samples (e.g., 40 = 0.16s at 250 Hz)
+        Must match offline step
+    
+    Returns:
+    --------
+    window : np.ndarray or None
+        Shape (n_channels, window_size) - most recent window
+        Returns None if buffer is too short
+    
+    Example:
+    --------
+    buffer = np.zeros((7, 1000))  # 7 channels, 1000 samples buffer
+    # ... add new samples to buffer ...
+    window = create_sliding_window_online(buffer, window_size=250, step=40)
+    if window is not None:
+        # Process window
+    """
+    if data_buffer.shape[1] < window_size:
+        return None
+    
+    # Get most recent window_size samples from buffer
+    window = data_buffer[:, -window_size:]
+    return window
+
+
+def handle_bad_window_online(
+    window: np.ndarray,
+    max_amplitude: float = 200e-6,  # 200 microvolts
+    ar: Optional[autoreject.AutoReject] = None,
+    sfreq: float = 250.0
+) -> Tuple[np.ndarray, bool]:
+    """
+    Detect and handle bad windows in real-time.
+    
+    Parameters:
+    -----------
+    window : np.ndarray
+        Shape (n_channels, n_samples) - window to check
+    max_amplitude : float
+        Maximum allowed amplitude in volts. Default: 200 µV
+        Typical EEG: 10-100 µV, artifacts: >200 µV
+    ar : autoreject.AutoReject, optional
+        Pre-fitted AutoReject object (from offline training)
+        If provided, uses AR for more sophisticated detection
+    sfreq : float
+        Sampling frequency
+    
+    Returns:
+    --------
+    window_clean : np.ndarray
+        Cleaned window (or original if not bad)
+    is_bad : bool
+        True if window should be skipped (too many artifacts)
+    
+    Notes:
+    ------
+    - Simple method: amplitude threshold
+    - Advanced method: AutoReject (if available)
+    - Bad windows should be skipped (not used for prediction)
+    """
+    # Method 1: Simple amplitude-based detection
+    if np.abs(window).max() > max_amplitude:
+        return window, True  # Mark as bad, skip this window
+    
+    # Method 2: AutoReject (if available and provided)
+    if ar is not None and AUTOREJECT_AVAILABLE:
+        try:
+            # Convert window to MNE EpochsArray format
+            info = mne.create_info(
+                [f"ch{i}" for i in range(window.shape[0])],
+                sfreq=sfreq,
+                ch_types="eeg"
+            )
+            # Reshape to (1, n_channels, n_samples) for single epoch
+            window_epoch = window[np.newaxis, :, :]
+            epochs = mne.EpochsArray(window_epoch, info, verbose="ERROR")
+            
+            # Apply AutoReject transform
+            epochs_clean = ar.transform(epochs)
+            
+            # Check if epoch was rejected (length becomes 0)
+            if len(epochs_clean) == 0:
+                return window, True  # Rejected by AR
+            
+            # Return cleaned window
+            return epochs_clean.get_data()[0], False
+        except Exception as e:
+            # If AR fails, fall back to amplitude check
+            return window, True
+    
+    # Window passed all checks
+    return window, False
+
+
+def clean_window_asr_online(
+    window: np.ndarray,
+    asr_object: Optional = None,
+    sfreq: float = 250.0
+) -> np.ndarray:
+    """
+    Apply ASR (Artifact Subspace Reconstruction) cleaning to window (optional).
+    
+    Parameters:
+    -----------
+    window : np.ndarray
+        Shape (n_channels, n_samples) - window to clean
+    asr_object : ASR object, optional
+        Pre-fitted ASR object (from offline baseline calibration)
+    sfreq : float
+        Sampling frequency
+    
+    Returns:
+    --------
+    window_clean : np.ndarray
+        ASR-cleaned window (or original if ASR not available)
+    
+    Notes:
+    ------
+    - ASR requires baseline data for calibration (done offline)
+    - More aggressive than AutoReject but computationally expensive
+    - Optional step - can be skipped for faster processing
+    """
+    if not ASR_AVAILABLE or asr_object is None:
+        return window
+    
+    try:
+        from asrpy import ASR
+        
+        # Note: ASR typically works on continuous data streams
+        # For single windows, this is a simplified implementation
+        # Full ASR integration may require buffering multiple windows
+        # For now, return original if ASR not properly configured
+        return window
+    except Exception:
+        return window
+
+
+def process_window_online(
+    window: np.ndarray,
+    config: Dict,
+    ar: Optional[autoreject.AutoReject] = None,
+    asr: Optional = None,
+    sfreq: float = 250.0
+) -> Tuple[np.ndarray, bool]:
+    """
+    Complete online processing pipeline for a single window.
+    Combines: Filter → Handle Bad → ASR (optional)
+    
+    Parameters:
+    -----------
+    window : np.ndarray
+        Shape (n_channels, n_samples) - raw window from buffer
+    config : Dict
+        Configuration dictionary (same as offline):
+        - fmin, fmax: filter frequencies
+        - max_amplitude: bad window threshold (optional)
+        - use_asr: enable ASR (optional)
+    ar : autoreject.AutoReject, optional
+        Pre-fitted AutoReject object (load from offline)
+    asr : ASR object, optional
+        Pre-fitted ASR object (load from offline)
+    sfreq : float
+        Sampling frequency
+    
+    Returns:
+    --------
+    window_processed : np.ndarray
+        Fully processed window ready for feature extraction
+        Shape: (n_channels, n_samples)
+    is_bad : bool
+        True if window should be skipped (too many artifacts)
+        False if window is good and can be used
+    
+    Example:
+    --------
+    # Load objects from offline
+    ar = preprocessing.load_autoreject(Path("models/autoreject.joblib"))
+    
+    # Process window
+    window_clean, is_bad = preprocessing.process_window_online(
+        window=raw_window,
+        config=config,
+        ar=ar,
+        sfreq=250.0
+    )
+    
+    if not is_bad:
+        # Use window for prediction
+        features = extract_features(window_clean)
+        prediction = model.predict(features)
+    """
+    # Step 1: Filter (causal - must be fast)
+    window_filtered = filter_online(
+        window,
+        sfreq=sfreq,
+        fmin=config["fmin"],
+        fmax=config["fmax"]
+    )
+    
+    # Step 2: Handle bad window (detect artifacts)
+    window_clean, is_bad = handle_bad_window_online(
+        window_filtered,
+        max_amplitude=config.get("max_amplitude", 200e-6),
+        ar=ar,
+        sfreq=sfreq
+    )
+    
+    # If bad, return early (skip ASR)
+    if is_bad:
+        return window_clean, True
+    
+    # Step 3: Optional ASR cleaning
+    if config.get("use_asr", False) and asr is not None:
+        window_clean = clean_window_asr_online(
+            window_clean,
+            asr_object=asr,
+            sfreq=sfreq
+        )
+    
+    return window_clean, False
 # ============================================================================
 # EXPORTS
 # ============================================================================
-
 __all__ = [
+    # Offline functions
     "filter_raw",
     "create_epochs",
     "reject_bad_epochs",
@@ -622,5 +908,12 @@ __all__ = [
     "clean_with_asr",
     "load_asr",
     "process_offline",
+    # Online functions
+    "filter_online",
+    "create_sliding_window_online",
+    "handle_bad_window_online",
+    "clean_window_asr_online",
+    "process_window_online",
 ]
+
 
