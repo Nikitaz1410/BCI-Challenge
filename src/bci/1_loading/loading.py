@@ -24,7 +24,10 @@ import pyxdf
 
 # Add the root directory to the Python path
 root_dir = str(Path(__file__).resolve().parents[3])  # BCI-Challange directory
+parent_of_root = str(Path(__file__).resolve().parents[4])  # one level above
+
 sys.path.append(root_dir)
+sys.path.append(parent_of_root)
 
 sys.path.append("..")
 from src.bci.utils.helper import get_raw_offline, get_epochs
@@ -36,8 +39,8 @@ warnings.filterwarnings("ignore")
 
 # CHECK COMMON CHANNELS BETWEEN SUBJECTS P999 AND P554: JUST TO VERIFY HOW MANY CHANNELS WE CAN USE
 
-p999_file = Path(root_dir) / "data" / "sub-P999" / "eeg" / "sub-P999_ses-S002_task-arrow_run-001_eeg.xdf"
-p554_file = Path(root_dir) / "data" / "sub-P554" / "eeg" / "sub-P554_ses-S002_task-Default_run-001_eeg.xdf"
+p999_file = Path(parent_of_root) / "data" / "sub-P999" / "eeg" / "sub-P999_ses-S002_task-arrow_run-001_eeg.xdf"
+p554_file = Path(parent_of_root) / "data" / "sub-P554" / "eeg" / "sub-P554_ses-S002_task-Default_run-001_eeg.xdf"
 
 ##############################
 # Extract channels directly from info stored in the XDF file (reference: helper.py module provided by BCI practical) 
@@ -378,7 +381,7 @@ Loading target-subject data\n\
 ------------------------------------------")
 
 # For now take only this file since P999 data does not have some channels we are using above
-mi_files = [Path(root_dir) / "data" / "sub-P554" / "eeg" / "sub-P554_ses-S002_task-Default_run-001_eeg.xdf"
+mi_files = [ Path(parent_of_root) / "data" / "sub-P554" / "eeg" / "sub-P554_ses-S002_task-Default_run-001_eeg.xdf"
         ]
 
 subj_raws = []
