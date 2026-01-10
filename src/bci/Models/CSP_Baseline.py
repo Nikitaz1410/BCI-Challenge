@@ -3,17 +3,17 @@ This module provides a simple wrapper around CSP (Common Spatial Patterns)
 feature extraction combined with a user-selectable classifier (SVM, LDA, etc.).
 
 The interface provides the following methods:
-- `CSPBaselineModel.fit(...)` trains from numpy arrays.
-- `CSPBaselineModel.predict(...)` predicts from numpy arrays.
-- `CSPBaselineModel.predict_proba(...)` returns class probabilities from numpy arrays.
-- `CSPBaselineModel.save(...)` and `CSPBaselineModel.load(...)` persist and restore models.
+- `CSP_Model.fit(...)` trains from numpy arrays.
+- `CSP_Model.predict(...)` predicts from numpy arrays.
+- `CSP_Model.predict_proba(...)` returns class probabilities from numpy arrays.
+- `CSP_Model.save(...)` and `CSP_Model.load(...)` persist and restore models.
 
 Usage:
-    model = CSPBaselineModel(classifier="svm").fit(signals, labels)
+    model = CSP_Model(classifier="svm").fit(signals, labels)
     preds = model.predict(signals)
     probs = model.predict_proba(signals)
     model.save("/path/to/model.pkl")
-    restored = CSPBaselineModel.load("/path/to/model.pkl")
+    restored = CSP_Model.load("/path/to/model.pkl")
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ def _create_classifier(classifier_type: str) -> Any:
 # --------------------------------------------------------------------------- #
 
 
-class CSPBaselineModel:
+class CSP_Model:
     """
     High-level wrapper around CSP feature extraction with a configurable classifier.
 
@@ -98,11 +98,11 @@ class CSPBaselineModel:
     labels: class labels as integers or one-hot array shaped [N] or [N, num_classes]
 
     Usage:
-        model = CSPBaselineModel(classifier="svm", n_components=50).fit(signals, labels)
+        model = CSP_Model(classifier="svm", n_components=50).fit(signals, labels)
         preds = model.predict(signals)
         probs = model.predict_proba(signals)
         model.save("/path/to/model.pkl")
-        restored = CSPBaselineModel.load("/path/to/model.pkl")
+        restored = CSP_Model.load("/path/to/model.pkl")
     """
 
     def __init__(
@@ -139,7 +139,7 @@ class CSPBaselineModel:
         self,
         signals: np.ndarray,
         labels: np.ndarray,
-    ) -> "CSPBaselineModel":
+    ) -> "CSP_Model":
         """
         Train the CSP baseline model from numpy arrays.
 
@@ -275,7 +275,7 @@ class CSPBaselineModel:
         return path
 
     @classmethod
-    def load(cls, path: str) -> "CSPBaselineModel":
+    def load(cls, path: str) -> "CSP_Model":
         """
         Restore a model previously saved with `save`.
 
@@ -283,14 +283,14 @@ class CSPBaselineModel:
             path: Path to the saved model file.
 
         Returns:
-            A restored CSPBaselineModel instance.
+            A restored CSP_Model instance.
         """
         with open(path, "rb") as f:
             checkpoint = pickle.load(f)
 
         instance = cls(
             classifier=checkpoint.get("classifier_type", "lda"),
-            n_components=checkpoint.get("n_components", 50),
+            n_components=checkpoint.get("n_components", 30),
             csp_reg=checkpoint.get("csp_reg", None),
             csp_log=checkpoint.get("csp_log", True),
             csp_norm_trace=checkpoint.get("csp_norm_trace", True),
@@ -305,14 +305,14 @@ class CSPBaselineModel:
 # Convenience functions for pipeline code that prefers functional access
 
 
-def train_csp_baseline(
+def train_csp_model(
     signals: np.ndarray,
     labels: np.ndarray,
     classifier: str = "lda",
     n_components: int = 50,
-) -> CSPBaselineModel:
+) -> CSP_Model:
     """
-    Train and return a CSPBaselineModel instance.
+    Train and return a CSP_Model instance.
 
     Args:
         signals: numpy array shaped [N, C, T] of EEG signals.
@@ -321,19 +321,19 @@ def train_csp_baseline(
         n_components: Number of CSP components to extract.
 
     Returns:
-        A trained CSPBaselineModel instance.
+        A trained CSP_Model instance.
     """
-    return CSPBaselineModel(classifier=classifier, n_components=n_components).fit(
+    return CSP_Model(classifier=classifier, n_components=n_components).fit(
         signals=signals, labels=labels
     )
 
 
-def predict_csp_baseline(model: CSPBaselineModel, signals: np.ndarray) -> np.ndarray:
+def predict_csp_model(model: CSP_Model, signals: np.ndarray) -> np.ndarray:
     """
-    Run prediction using an existing CSPBaselineModel.
+    Run prediction using an existing CSP_Model.
 
     Args:
-        model: A trained CSPBaselineModel instance.
+        model: A trained CSP_Model instance.
         signals: numpy array shaped [N, C, T] of EEG signals.
 
     Returns:
@@ -342,12 +342,12 @@ def predict_csp_baseline(model: CSPBaselineModel, signals: np.ndarray) -> np.nda
     return model.predict(signals=signals)
 
 
-def save_csp_baseline(model: CSPBaselineModel, path: str) -> str:
+def save_csp_model(model: CSP_Model, path: str) -> str:
     """
-    Persist a trained CSPBaselineModel to disk.
+    Persist a trained CSP_Model to disk.
 
     Args:
-        model: A trained CSPBaselineModel instance.
+        model: A trained CSP_Model instance.
         path: Path where the model should be saved.
 
     Returns:
@@ -356,14 +356,14 @@ def save_csp_baseline(model: CSPBaselineModel, path: str) -> str:
     return model.save(path)
 
 
-def load_csp_baseline(path: str) -> CSPBaselineModel:
+def load_csp_model(path: str) -> CSP_Model:
     """
-    Restore a previously saved CSPBaselineModel from disk.
+    Restore a previously saved CSP_Model from disk.
 
     Args:
         path: Path to the saved model file.
 
     Returns:
-        A restored CSPBaselineModel instance.
+        A restored CSP_Model instance.
     """
-    return CSPBaselineModel.load(path)
+    return CSP_Model.load(path)

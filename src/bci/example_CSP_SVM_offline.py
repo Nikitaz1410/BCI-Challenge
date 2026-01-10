@@ -1,30 +1,30 @@
 import sys
-import time
 import pickle
+import time
+
 import numpy as np
+
 from pathlib import Path
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    accuracy_score,
+    f1_score,
+    brier_score_loss,
+)
 
-# Ensure the package root is on sys.path when running this file directly
-SRC_ROOT = Path(__file__).resolve().parents[2]
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
-from pylsl import StreamInlet, resolve_streams
 
 from bci.loading.bci_config import load_config
+from bci.loading.data_acquisition import load_data, extract_baseline
 from bci.preprocessing.filtering import Filter
 from bci.preprocessing.epoching import extract_epochs
 from bci.preprocessing.artefact_removal import ArtefactRemoval
-from bci.models.riemann import (
-    RiemannianClf,
-    recentering,
-    compute_covariances,
-)
+from bci.models.CSP_Baseline import CSP_Model
 from bci.evaluation.metrics import compute_ece, MetricsTable, compute_itr
 
+# =============================================================================
+# Main
+# =============================================================================
 if __name__ == "__main__":
-    # Init the Objects
-
     # TODO: Load configuration
     try:
         config_path = Path.cwd() / "resources" / "configs" / "bci_config.yaml"
@@ -35,63 +35,94 @@ if __name__ == "__main__":
         print(f"❌ Error loading config: {e}")
         sys.exit(1)
 
-    model_path = Path.cwd() / "resources" / "models" / "model.pkl"
-    artefact_rejection_path = (
-        Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
+    # INIT OBJECTS AND PARAMETERS
+    train_subject_id = 2
+    test_subject_id = 42
+
+    filter = Filter(config, online=False)
+    ar = ArtefactRemoval()
+    clf = CSP_Model()
+
+    metrics_table = MetricsTable()
+    metrics_data = dict()
+
+    # TODO: Import Data
+    raw_train, events_train, event_id_train = load_data(
+        subject=train_subject_id, config=config
+    )
+    raw_test, events_test, event_id_test = load_data(
+        subject=test_subject_id, config=config
     )
 
-    filter = Filter(config, online=True)
-    ar = pickle.load(open(artefact_rejection_path, "rb"))
-    clf = pickle.load(open(model_path, "rb"))
-    buffer = np.zeros((len(config.channels), int(config.window_size)), dtype=np.float32)
+    # TODO: Filter the Data (No Notch for now)
+    raw_train = filter.apply_filter_offline(raw_train)
+    raw_test = filter.apply_filter_offline(raw_test)
 
-    avg_time_per_classification = 0.0
-    number_of_classifications = 0
+    # TODO: Epoch the Data
+    train_epochs, train_labels = extract_epochs(
+        raw=raw_train, events=events_train, event_id=event_id_train, config=config
+    )
+    test_epochs, test_labels = extract_epochs(
+        raw=raw_test, events=events_test, event_id=event_id_test, config=config
+    )
 
-    total_fails = 0
-    total_successes = 0
-    total_trials = 0
+    # TODO: Remove Artifacts
+    ar.get_rejection_thresholds(train_epochs, config)
+    clean_train_epochs, clean_train_labels = ar.reject_bad_epochs(
+        train_epochs, train_labels
+    )
+    clean_test_epochs, clean_test_labels = ar.reject_bad_epochs(
+        test_epochs, test_labels
+    )
 
-    print("Initializing preprocessing and model objects completed!")
+    # TODO: Train the Model
+    start_train_time = time.time() * 1000
+    clf.fit(clean_train_epochs, clean_train_labels)
+    end_train_time = time.time() * 1000
 
-    # TODO: Find the EEG stream from LSL and establish connection
-    print("Looking for an EEG stream...")
-    streams = resolve_streams(wait_time=5.0)
-    print("EEG stream found.")
-    print(streams)
-    inlet = StreamInlet(streams[0])
-    inlet_labels = StreamInlet(streams[1])
-    print("Starting to read data from the EEG stream...")
-    while True:
-        # TODO: Check the frequency at which the data is pulled
-        try:
-            start_classification_time = time.time() * 1000  # in milliseconds
-            sample, timestamp = inlet.pull_chunk()
-            if len(sample) == 0:
-                continue
-            # Update the buffer with new samples
-            else:
-                sample = np.array(sample).T  # shape (n_channels, n_samples)
-                # print(f"New sample shape: {sample.shape}")
-                # Add the new samples to the buffer at the end and remove the beginning
-                n_new_samples = sample.shape[1]
-                buffer = np.roll(buffer, -n_new_samples, axis=1)
-                buffer[:, -n_new_samples:] = sample
+    # TODO: Evaluate the Model
+    start_eval_time = time.time() * 1000
+    predictions = clf.predict(clean_test_epochs)
+    end_eval_time = time.time() * 1000
+    probabilities = clf.predict_proba(clean_test_epochs)
 
-            # TODO: Filter the data
-            filtered_data = filter.apply_filter_online(buffer)
+    # TODO: Collect and Compute Metrics -> How should I move this into one function?
+    acc = round(accuracy_score(test_labels, predictions), 2)
+    metrics_data["Acc."] = acc
+    f1 = round(f1_score(test_labels, predictions, average="macro"), 2)
+    metrics_data["F1 Score"] = f1
+    b_acc = round(balanced_accuracy_score(test_labels, predictions), 2)
+    metrics_data["B. Acc."] = b_acc
+    ece = round(compute_ece(test_labels, probabilities, n_bins=10), 2)
+    metrics_data["ECE"] = ece
+    brier = round(brier_score_loss(test_labels, probabilities), 2)
+    metrics_data["Brier"] = brier
+    train_time = round(end_train_time - start_train_time, 2)
+    metrics_data["Train Time (ms)"] = train_time
+    infer_time = round((end_eval_time - start_eval_time) / len(test_labels), 2)
+    metrics_data["Infer. Time (ms)"] = infer_time
+    filter_latency = round(filter.get_filter_latency(), 2)
+    metrics_data["Avg. Filter Latency (ms)"] = filter_latency
 
-            # TODO: Artifact Rejection: Check if it is an artifact
+    itr = compute_itr(
+        n_classes=len(event_id_train),
+        accuracy=acc,
+        time_per_trial=(infer_time + filter_latency) / 1000,
+    )
+    metrics_data["ITR (bits/min)"] = round(itr["itr_bits_per_min"], 2)
 
-            # TODO: Create the features and classify
-            end_classification_time = time.time() * 1000  # in milliseconds
-            avg_time_per_classification += (
-                end_classification_time - start_classification_time
-            )
-        except KeyboardInterrupt:
-            print("Stopping the online processing.")
-            # Add the current evaluations?
-            print(
-                f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications)} ms"
-            )
-            break
+    # Create Offline Metrics Table
+    metrics_table.add_rows([metrics_data])
+    metrics_table.display()
+
+    # TODO: Save the Model and other Objects
+    model_path = Path.cwd() / "resources" / "models" / "model.pkl"
+    with open(model_path, "wb") as f:
+        pickle.dump(clf, f)
+    print(f"Model saved to: {model_path}")
+
+    # TODO: Save the Artefact Removal Object
+    ar_path = Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
+    with open(ar_path, "wb") as f:
+        pickle.dump(ar, f)
+    print(f"Artefact Removal object saved to: {ar_path}")
