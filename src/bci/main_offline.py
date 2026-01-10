@@ -67,16 +67,20 @@ test_epochs = recentering(test_epochs)
 
 # TODO: Remove Artifacts
 ar.get_rejection_thresholds(train_epochs, config)
-clean_train_epochs, clean_train_labels = ar.reject_bad_epochs(
-    train_epochs, train_labels
-)
-clean_test_epochs, clean_test_labels = ar.reject_bad_epochs(
-    test_epochs, test_labels
-)
+clean_train_epochs, clean_train_labels = ar.reject_bad_epochs(train_epochs, train_labels)
+clean_test_epochs, clean_test_labels = ar.reject_bad_epochs(test_epochs, test_labels)
+# @Amal could you please make sure that the session ids in sessions_id_train and sessions_id_test are still correct after the autorejecting potentially removing epochs
+
+X_train, y_train, sessions_id_train = window_data(clean_train_epochs, clean_train_labels, sessions_id_train)
+X_test, y_test, sessions_id_test = window_data(clean_test_epochs, clean_test_labels, sessions_id_test)
+
+# @Amal please make sure the sessions_id_train and sessions_id_test are still correct after the AR potentially removing epochs
+# + please directly window the data here as discussed with Iustin
 # Amal END
 
 # Nikita START
 # TODO: Extract Features
+model = 
 model.fit(clean_train_epochs, clean_train_labels)
 model.predict(test_epochs)
 
