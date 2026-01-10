@@ -1,0 +1,5 @@
+Every model in this folder shall provide the following interface to be used in our pipeline:
+fit()
+predict()
+predict_proba()
+save()/load()
