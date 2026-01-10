@@ -44,6 +44,7 @@ x_filtered_train = filter.apply_filter_offline(x_raw_train)
 x_filtered_test = filter.apply_filter_offline(x_raw_test)
 
 # TODO: Epoch the Data
+# ATTENTION: DATA LEAKAGE HERE!!! Overlapping windows which are later split in train and val
 train_epochs, train_labels = extract_epochs(
     raw=x_filtered_train, events=y_train, event_id=sessions_id_train, config=config
 )
@@ -75,12 +76,11 @@ X_train, y_train, sessions_id_train = window_data(clean_train_epochs, clean_trai
 X_test, y_test, sessions_id_test = window_data(clean_test_epochs, clean_test_labels, sessions_id_test)
 
 # @Amal please make sure the sessions_id_train and sessions_id_test are still correct after the AR potentially removing epochs
-# + please directly window the data here as discussed with Iustin
+# + please  window the data here (inside the CV loop!) as discussed with Iustin
 # Amal END
 
 # Nikita START
 # TODO: Extract Features
-model = 
 model.fit(clean_train_epochs, clean_train_labels)
 model.predict(test_epochs)
 

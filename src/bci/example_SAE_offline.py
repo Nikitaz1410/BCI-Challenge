@@ -19,7 +19,7 @@ from bci.loading.data_acquisition import load_data
 from bci.preprocessing.filtering import Filter
 from bci.preprocessing.epoching import extract_epochs
 from bci.preprocessing.artefact_removal import ArtefactRemoval
-from bci.models.CSP_Baseline import CSP_Model
+from bci.models.SAE import SAEModel
 from bci.evaluation.metrics import compute_ece, MetricsTable, compute_itr
 
 
@@ -69,7 +69,7 @@ if __name__ == "__main__":
 
     filter = Filter(config, online=False)
     ar = ArtefactRemoval()
-    clf = CSP_Model(classifier="lda", n_components=10)
+    clf = SAEModel(classifier="csp-lda")
 
     metrics_table = MetricsTable()
 
@@ -127,7 +127,7 @@ if __name__ == "__main__":
         )
         
         # Train model on clean training fold
-        fold_clf = CSP_Model(classifier="lda", n_components=10)
+        fold_clf = SAEModel(classifier="csp-lda")
         start_train_time = time.time() * 1000
         fold_clf.fit(clean_fold_train_epochs, clean_fold_train_labels)
         end_train_time = time.time() * 1000
@@ -238,8 +238,7 @@ if __name__ == "__main__":
 
     # TODO: Save the Model and other Objects
     model_path = Path.cwd() / "resources" / "models" / "model.pkl"
-    with open(model_path, "wb") as f:
-        pickle.dump(clf, f)
+    clf.save(str(model_path))
     print(f"Model saved to: {model_path}")
 
     # TODO: Save the Artefact Removal Object

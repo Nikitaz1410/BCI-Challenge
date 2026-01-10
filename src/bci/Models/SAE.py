@@ -225,13 +225,20 @@ class SAEModel:
         dataset = _NumpySAEDataset(signals, task_labels, day_labels)
 
         if self.model_adjustments is None:
-            # Use the explicit configuration from the reference notebook to avoid
-            # automatic search. Adjust if you need different lengths.
-            self.model_adjustments = {
-                "encoder_pad": [1, 1, 1],
-                "decoder_pad": [1, 0, 1, 0, 1, 2],
-                "latent_sz": 160,
-            }
+            # Automatically compute model adjustments based on signal length
+            signal_length = signals.shape[2]  # Get time dimension
+            try:
+                self.model_adjustments = _predict_adjustments(signal_length, self.filters)
+                print(f"Auto-computed model adjustments for signal length {signal_length}: "
+                      f"latent_sz={self.model_adjustments['latent_sz']}")
+            except ValueError as e:
+                # Fallback to default if auto-computation fails
+                print(f"Warning: Could not auto-compute adjustments, using defaults. Error: {e}")
+                self.model_adjustments = {
+                    "encoder_pad": [1, 1, 1],
+                    "decoder_pad": [1, 0, 1, 0, 1, 2],
+                    "latent_sz": 160,
+                }
 
         self._meta = {
             "n_channels": dataset.n_channels,
