@@ -51,7 +51,15 @@ test_epochs, test_labels = extract_epochs(
     raw=x_filtered_test, events=y_test, event_id=sessions_id_test, config=config
 )
 
-# Begin Cross Validation just on the training data and test on finas test data only in the end
+# Begin Cross Validation just on the training data and test on finas test data only in the end # TODO: Implement Cross Validation
+# 1. Split the training data into k folds
+# 2. For each fold, train the model on the training data and test on the validation data
+# 3. Compute the metrics for each fold
+# 4. Compute the average metrics across all folds
+# 5. Compute the final metrics on the test data
+# 6. Print the metrics
+# 7. Save the model
+
 
 # (optional) Normalize the data
 train_epochs = recentering(train_epochs)
