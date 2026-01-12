@@ -493,15 +493,15 @@ def load_target_subject_data(
 
 
 # ==========================================
-sub_raws, sub_events, sub_event_id, sub_ids = load_target_subject_data(
-    parent_of_root=parent_of_root,
-    source_folder=str(Path(parent_of_root) / "data" / "eeg" / "sub-P999" / "eeg"),
-    task_type="arrow",
-    limit=None)
+# sub_raws, sub_events, sub_event_id, sub_ids = load_target_subject_data(
+#     parent_of_root=parent_of_root,
+#     source_folder=str(Path(parent_of_root) / "data" / "eeg" / "sub-P999" / "eeg"),
+#     task_type="arrow",
+#     limit=None)
 
-print(sub_event_id)
-print(f"Loaded {len(sub_raws)} raws from target subject data.")
-print("Subject IDs:", sub_ids)
+# print(sub_event_id)
+# print(f"Loaded {len(sub_raws)} raws from target subject data.")
+# print("Subject IDs:", sub_ids)
 # ==========================================
 
 
