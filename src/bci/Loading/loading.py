@@ -1,3 +1,36 @@
+"""
+loading Module: This module handles data loading for the BCI pipeline.
+
+This module handles:
+1. Loading Physionet Motor Imagery Data
+2. Loading Target Subject Data
+
+Usage:
+    from src.bci import loading
+    
+    # Load Physionet data for subjects 1 to 5
+    physionet_raws, 
+    physionet_events, 
+    physionet_event_id, 
+    physionet_subject_ids = loading.load_physionet_data(
+        subjects=list(range(1, 6)),
+        parent_of_root="/path/to/parent/of/root"
+    )
+    
+    # Load Target Subject data (Subject 110)
+    target_raws,
+    target_events,
+    target_event_id,
+    target_subject_ids = loading.load_target_subject_data(
+        parent_of_root="/path/to/parent/of/root",
+        source_folder="/path/to/source/xdf/files",
+        task_type="arrow",  # or "dino" or "all"
+        limit=5  # Optional limit on number of files to load
+    )
+    
+"""
+
+from __future__ import annotations
 
 import warnings
 import sys
@@ -5,22 +38,12 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
-import scipy
-import pyxdf
-
-import matplotlib.pyplot as plt
-from sklearn.model_selection import GroupKFold, GroupShuffleSplit
+import json
 
 import mne
-from mne import Epochs, pick_types
-from mne.io import concatenate_raws, read_raw_edf
+from mne.io import concatenate_raws
 
 import moabb
-from moabb.datasets import PhysionetMI
-
-from autoreject import AutoReject
-
-import pyxdf
 
 # Add the root directory to the Python path
 root_dir = str(Path(__file__).resolve().parents[3])  # BCI-Challange directory
@@ -30,482 +53,521 @@ sys.path.append(root_dir)
 sys.path.append(parent_of_root)
 
 sys.path.append("..")
-from src.bci.utils.helper import get_raw_offline, get_epochs
-
 
 moabb.set_log_level("info")
 warnings.filterwarnings("ignore")
 
 
-# CHECK COMMON CHANNELS BETWEEN SUBJECTS P999 AND P554: JUST TO VERIFY HOW MANY CHANNELS WE CAN USE
 
-p999_file = Path(parent_of_root) / "data" / "sub-P999" / "eeg" / "sub-P999_ses-S002_task-arrow_run-001_eeg.xdf"
-p554_file = Path(parent_of_root) / "data" / "sub-P554" / "eeg" / "sub-P554_ses-S002_task-Default_run-001_eeg.xdf"
+def get_raw_xdf_offline(
+    trial: Path, marker_durations: list[float] | None = None
+) -> tuple[mne.io.RawArray, list, list[str]]:
+    """
+    Function to load the raw data from the trial and return the raw data object, 
+    the markers and the channel labels.
+    Based on the implementation from https://gitlab.lrz.de/students2/baseline-bci. 
+    
+    Parameters
+    ----------
+    trial : Path
+        Path to the trial file.
+    marker_durations : list, optional
+        List of marker durations. The default is [3, 1, 3].
 
-##############################
-# Extract channels directly from info stored in the XDF file (reference: helper.py module provided by BCI practical) 
-###############################
-streams, header = pyxdf.load_xdf(p999_file, verbose=False)
+    Returns
+    -------
+    raw_data : mne.io.RawArray
+        Raw data object.
+    markers : list
+        List of markers.
+    channel_labels : list[str]
+        List of channel labels.
 
-event_channel = None
-markers = []
+    Notes
+    -----
+    The current implementation processes two types of recordings:
+    1. Recordings with no channel information (assigns predefined channel labels)
+    2. Recordings where channel information exactly matches predefined channel labels
+    
+    Number of channels should be 16, the order and naming of channels should match the list 
+    of channel_labels below.
+    Function may need to be adapted for other recordings.
+    """
+    import pyxdf
 
-pupil_capture_channel, pupil_capture_fixations_channel, pupil_channel = (
+    # Define channel labels
+    expected_channel_labels = [
+        "Fp1","Fp2","F3","Fz","F4","T7","C3","Cz","C4","T8","P3","Pz","P4","PO7","PO8","Oz",
+    ]  # Manually set for g.Nautilus, standard 10-20 montage
+
+    # Load the data
+    if marker_durations is None:
+        marker_durations = [3, 1, 3]
+
+    streams, header = pyxdf.load_xdf(trial, verbose=False)
+
+    event_channel = None
+    markers = []
+
+    pupil_capture_channel, pupil_capture_fixations_channel, pupil_channel = (
         None,
         None,
         None,
     )
-eeg_channel = None
+    eeg_channel = None
 
-# Iterate through streams to find desired indices
-for i, stream in enumerate(streams):
-    name = stream["info"]["name"][0]  # name of the stream
-    # print(name)
-    if name == "EEG - Impedances":
-        _index_impedance = i  # impedance stream
-    elif name == "EEG":
-        eeg_channel = i  # eeg stream
-    elif name == "pupil_capture_pupillometry_only":
-        pupil_channel = i  # pupil stream
-    elif name == "pupil_capture":
-        pupil_capture_channel = i  # pupil stream
-    elif name == "pupil_capture_fixations":
-        pupil_capture_fixations_channel = i
+    # Iterate through streams to find desired indices
+    for i, stream in enumerate(streams):
+        name = stream["info"]["name"][0]  # name of the stream
+        # print(name)
+        if name == "EEG - Impedances":
+            _index_impedance = i  # impedance stream
+        elif name == "EEG":
+            eeg_channel = i  # eeg stream
+        elif name == "pupil_capture_pupillometry_only":
+            pupil_channel = i  # pupil stream
+        elif name == "pupil_capture":
+            pupil_capture_channel = i  # pupil stream
+        elif name == "pupil_capture_fixations":
+            pupil_capture_fixations_channel = i
+        else:
+            event_channel = i  # markers stream
+
+    # print(streams[eeg_channel]["info"])
+
+    # Validate channel information:
+    if streams[eeg_channel]["info"]["desc"] != [None]:  
+        print("Channel info found in the recording.")
+        # Channel info is available - check if it matches expected labels
+        channel_dict = streams[eeg_channel]["info"]["desc"][0]["channels"][0]["channel"]
+        eeg_channels = [channel["label"][0] for channel in channel_dict]
+        
+        # Check if channels match expected labels
+        if eeg_channels != expected_channel_labels:
+            # Channel info exists but doesn't match - filter out this recording
+            return None, None, None
+    else:  
+        print("No channel info found in the recording.")
+        # No channel info available - use predefined channel labels
+        channel_labels = expected_channel_labels
+
+
+    # Create montage object - this is needed for the raw data object (Layout of the electrodes)
+    montage = mne.channels.make_standard_montage("standard_1020")
+    ts = streams[eeg_channel]["time_series"][-1]
+    print(
+        f"EEG data timestamps range from {ts[0]/250.0} to {ts[-1]/250.0} (total {ts[-1]/250.0-ts[0]/250.0:.2f} seconds)"
+    )
+
+    # Get EEG data - https://mne.tools/dev/auto_examples/io/read_xdf.html#ex-read-xdf
+    data = streams[eeg_channel]["time_series"].T * 1e-6  # scaling the data to volts
+    print(len(data), data.shape)
+
+    # # exclude last channel if it is impedance
+    # if channel_labels[-1].lower() in ["ts", "impedances", "keyboard"]:
+    #     data = data[:-1, :]
+    #     channel_labels = channel_labels[:-1]
+
+    # Verify we have the correct number of channels
+    if data.shape[0] != len(channel_labels):
+        print(f"Data has {data.shape[0]} channels, but expected {len(channel_labels)} channels")
+        return None, None, None
+
+    # Get sampling frequency and create info object
+    sfreq = float(streams[eeg_channel]["info"]["nominal_srate"][0])
+    info = mne.create_info(channel_labels, sfreq, ch_types="eeg")
+
+    # Create raw object and set the montage
+    raw_data = mne.io.RawArray(data, info, verbose=False)
+    raw_data.set_montage(montage)
+
+    # In the case where the offline collected data (calibration from online) does not have any markers
+    if event_channel is None:
+        return raw_data, markers, channel_labels
+
+    # get naming of markers and convert to numpy array
+    marker = np.array(streams[event_channel]["time_series"]).squeeze()
+
+    # get time stamps of markers
+    time_marker = np.array(streams[event_channel]["time_stamps"]).squeeze()
+
+    # get time stamps of data
+    time_data = np.array(streams[eeg_channel]["time_stamps"])
+
+    # get relative time of markers
+    real_time_marker = (time_marker - time_data[0]).astype(float)
+
+    # Create array of durations for each individual marker
+    duration_list = np.zeros(len(real_time_marker))
+    for i, _duration in enumerate(duration_list):
+        duration_list[i] = marker_durations[i % len(marker_durations)]
+
+    # Annotate the raw data with the markers (So that we know what events are happening at what time in the data)
+    annotations = mne.Annotations(
+        onset=real_time_marker, duration=duration_list, description=marker
+    )
+    raw_data.set_annotations(annotations)
+
+    # Save the unique markers for later use
+    markers = list(set(marker))
+    markers.sort()
+
+    return raw_data, markers, channel_labels
+
+
+
+def load_physionet_data(subjects: list[int], parent_of_root: str) -> tuple:
+    '''Load Physionet Motor Imagery data for specified subjects.
+    
+    This function checks if the data is already saved on disk. If not, it downloads
+    the data from Physionet, preprocesses it (attaching subject IDs), and saves it
+    to disk for future use.
+
+    Parameters
+    ----------
+    subjects : list[int]
+        List of subject IDs to load. IDs are integers.
+    parent_of_root : str
+        Path to the parent directory of the root dataset folder.
+
+    Returns
+    -------
+    tuple
+        A tuple containing:
+        - loaded_raws: List of MNE Raw objects for each subject.
+        - loaded_events: List of event arrays for each subject.
+        - event_id: Dictionary mapping event labels to event IDs.
+        - subject_ids_out: List of subject IDs corresponding to the loaded data.
+    '''
+
+    physionet_root = Path(parent_of_root) / "data" / "datasets" / "physionet"
+    raw_dir = physionet_root / "raws"
+    event_dir = physionet_root / "events"
+    meta_dir = physionet_root / "metadata"
+    event_id_path = physionet_root / "event_id.json"
+    subjects_csv = meta_dir / "subjects.csv"
+
+    for d in [raw_dir, event_dir, meta_dir]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    # 1. DATA GENERATION / SAVING TO DISK
+    if not subjects_csv.exists():
+        from moabb.datasets import PhysionetMI
+        dataset = PhysionetMI(imagined=True, executed=False)
+        dataset.feet_runs = []
+        
+        remove = [88, 92, 100]
+        target_subjects = [x for x in dataset.subject_list if x not in remove]
+
+        event_dict = dataset.events  
+        event_id = {'rest': event_dict['rest'], 
+                    'left_hand': event_dict['left_hand'], 
+                    'right_hand': event_dict['right_hand']}
+        
+        # Save event_id mapping
+        with open(event_id_path, "w") as f:
+            json.dump(event_id, f, indent=2)
+
+        channels = ["Fp1",
+                    "Fp2",
+                    "F3",
+                    "Fz",
+                    "F4",
+                    "T7",
+                    "C3",
+                    "Cz",
+                    "C4",
+                    "T8",
+                    "P3",
+                    "Pz",
+                    "P4",
+                    "PO7",
+                    "PO8",
+                    "Oz"]   # standard 10-20 montage
+        subject_rows = []
+
+        for sub_id in target_subjects:
+            raw_dict = dataset.get_data(subjects=[sub_id])
+            raw_list = []
+            for session in raw_dict[sub_id]:
+                for run in raw_dict[sub_id][session]:
+                    raw_list.append(raw_dict[sub_id][session][run])
+
+            raw_sub = mne.concatenate_raws(raw_list)
+            raw_sub.pick(channels)
+            
+            # --- ATTACH SUBJECT ID TO RAW ---
+            # Use the 'subject_info' dictionary which is the standard MNE way
+            raw_sub.info['subject_info'] = {'id': sub_id}
+            
+            raw_path = raw_dir / f"subj_{sub_id:03d}_raw.fif"
+            events_path = event_dir / f"subj_{sub_id:03d}_events.npy"
+            
+            events_sub, _ = mne.events_from_annotations(raw_sub, event_id=event_id)
+            np.save(events_path, events_sub)
+            raw_sub.save(raw_path, overwrite=True)
+            # np.save(events_path, mne.find_events(raw_sub))
+            
+            # Record metadata to CSV
+            subject_rows.append({"subject_id": sub_id, "raw_file": raw_path.name, "events_file": events_path.name})
+
+        pd.DataFrame(subject_rows).to_csv(subjects_csv, index=False)
+    
+    # 2. LOAD DATA FROM DISK
+    with open(event_id_path, "r") as f:
+        event_id = json.load(f)
+
+    loaded_raws = []
+    loaded_events = []
+    subject_ids_out = []
+
+    for sub_id in subjects:
+        if sub_id in [88, 92, 100]:
+            continue  # Skip subjects with known issues
+
+        r_path = raw_dir / f"subj_{sub_id:03d}_raw.fif"
+        e_path = event_dir / f"subj_{sub_id:03d}_events.npy"
+        
+        raw = mne.io.read_raw_fif(r_path, preload=True)
+        evs = np.load(e_path)
+        
+        # Ensure the ID is present in the info after loading
+        raw.info['subject_info'] = {'id': sub_id}
+        
+        loaded_raws.append(raw)
+        loaded_events.append(evs)
+        subject_ids_out.append(sub_id)
+
+    return loaded_raws, loaded_events, event_id, subject_ids_out
+
+
+
+# TODO: Function in progress
+def load_target_subject_data(
+    parent_of_root: str, 
+    source_folder: str = None, 
+    task_type: str = "all", 
+    limit: int = None
+) -> tuple:
+    """
+    Loads target data (Subject 110). 
+    1. Checks 'data/datasets/target' for existing .fif files.
+    2. If empty, processes XDF from source_folder.
+    3. Infers and saves event_id mapping.
+    """
+    target_dir = Path(parent_of_root) / "data" / "datasets" / "target"
+    raw_save_dir = target_dir / "raws"
+    event_save_dir = target_dir / "events"
+    event_id_path = target_dir / "event_id.json"
+    
+    raw_save_dir.mkdir(parents=True, exist_ok=True)
+    event_save_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- STEP 1: CHECK TARGET FOLDER ---
+    existing_fif = sorted(list(raw_save_dir.glob("*.fif")))
+    
+    # Filter by task_type if existing files are found
+    if task_type == "dino":
+        existing_fif = [f for f in existing_fif if "dino" in f.name.lower()]
+    elif task_type == "arrow":
+        existing_fif = [f for f in existing_fif if "dino" not in f.name.lower()]
+
+    if len(existing_fif) > 0:
+        print(f"Found {len(existing_fif)} processed files in target folder. Loading...")
+        if limit: existing_fif = existing_fif[:limit]   # load files only up to limit
+        
+        loaded_raws = []
+        loaded_events = []
+        for fif_p in existing_fif:
+            raw = mne.io.read_raw_fif(fif_p, preload=True)
+            # Find corresponding event file
+            npy_p = event_save_dir / f"{fif_p.stem.replace('_raw', '')}_events.npy"
+            evs = np.load(npy_p)
+            # print(evs)
+            loaded_raws.append(raw)
+            loaded_events.append(evs)
+        
+        with open(event_id_path, 'r') as f:
+            event_id = json.load(f)
+            # print(event_id)
+            
+        return loaded_raws, loaded_events, event_id, [110] * len(loaded_raws)
+
+    # --- STEP 2: IF TARGET EMPTY, CHECK SOURCE ---
+    if source_folder is None:
+        raise ValueError("Target folder is empty and no source_folder was provided to process raw XDF files.")
+
+    source_path = Path(source_folder)
+    all_xdf = sorted([p for p in source_path.glob("*.xdf")])
+    
+    if task_type == "dino":
+        selected_files = [f for f in all_xdf if "dino" in f.name.lower()]
+    elif task_type == "arrow":
+        selected_files = [f for f in all_xdf if "dino" not in f.name.lower()]
     else:
-        event_channel = i  # markers stream
+        selected_files = all_xdf
 
-    # Get the channel labels
-channels = streams[eeg_channel]["info"]["desc"][0]["channels"][0]["channel"]
-p999_channels = [channel["label"][0] for channel in channels]
+    if not selected_files:
+        raise FileNotFoundError(f"No XDF files matching category '{task_type}' found in {source_folder}")
 
-# Channels manually set for P554 (g.Nautilus) got while using "original" get_raw_offline function from helper.py
-_, _, p554_channels = get_raw_offline(p554_file)
+    if limit: selected_files = selected_files[:limit]
 
-print(f"Number of channels for P999: {len(p999_channels)}, channels: {p999_channels}")
-print(f"Number of channels for P554: {len(p554_channels)}, channels: {p554_channels}")
-
-common_channels = list(set(p999_channels).intersection(set(p554_channels)))
-print(f"Common channels between P999 and P554: {common_channels}")
-print(f"Number of common channels: {len(common_channels)}")
-# ONLY 13 CHANNELS ARE COMMON: ['C4', 'Fp2', 'C3', 'T7', 'T8', 'F4', 'Fp1', 'P3', 'Cz', 'Fz', 'F3', 'P4', 'Pz']
-
-
-# # CSP Feature Extractor class (from A4_1)
-# class CSPFeatureExtractor:
-#     def __init__(self, n_components: int = 4, reg = None):
-#         self.n_components = n_components
-#         self.reg = reg
-#         self.csp = mne.decoding.CSP(n_components=n_components, reg=reg, log=True, norm_trace=False)
-
-#     def fit(self, data: np.ndarray, labels: np.ndarray):
-#         """Fit CSP on raw windowed trials (n_windows, n_channels, n_samples)"""
-#         # MNE CSP expects raw data, not covariance matrices
-#         self.csp.fit(data, labels)
-#         return self
-
-#     def transform(self, data: np.ndarray) -> np.ndarray:
-#         """Transform raw windowed trials to CSP features"""
-#         return self.csp.transform(data)
+    loaded_raws, loaded_events, selected_event_id = [], [], {}
     
-#     def fit_transform(self, data: np.ndarray, labels: np.ndarray) -> np.ndarray:
-#         """Fit and transform in one step"""
-#         self.fit(data, labels)
-#         return self.transform(data)
-    
+    channels = ["Fp1",
+                "Fp2",
+                "F3",
+                "Fz",
+                "F4",
+                "T7",
+                "C3",
+                "Cz",
+                "C4",
+                "T8",
+                "P3",
+                "Pz",
+                "P4",
+                "PO7",
+                "PO8",
+                "Oz"]   # standard 10-20 montage
 
-# ==========================================
-# From bci_processing.py (Assignment 5)
-# ==========================================
-# Extract overlapping time windows of the trials for feature extraction
-def extract_overlapping_windows(eeg, window_size=250, step_size=16):
-    n_channels, n_samples = eeg.shape
+    # --- STEP 3: PROCESS XDF AND INFER EVENT_ID ---
+    for file_path in selected_files:
+        print(f"Processing XDF: {file_path.name}")
+        raw, markers, channel_labels = get_raw_xdf_offline(file_path)
+        
+        if raw is None: continue
 
-    window_length_samples = int(window_size)
-    window_shift_samples = int(step_size)
+        raw.resample(160)
+        raw.pick(channels)
 
-    nwindows = int((n_samples - window_length_samples) / (window_shift_samples)) + 1
+        # Rename annotations to standard labels (not sure if we need it though)
+        # mapping = {
+        #     "CIRCLE": "rest",
+        #     "ARROW LEFT": "left_hand",
+        #     "ARROW RIGHT": "right_hand"
+        # }
 
-    window_starts = np.arange(
-        0, n_samples - window_length_samples + 1, window_shift_samples
-    ).astype(int)
-    window_ends = window_starts + window_length_samples
+        # # Apply the rename directly to the raw object
+        # raw.annotations.rename(mapping)
 
-    windows = np.zeros((nwindows, n_channels, window_length_samples))
+        # Infer event_id: Get unique descriptions from annotations
+        # This builds a dictionary {description: integer} automatically
+        current_events, current_event_id = mne.events_from_annotations(raw)
+        # print(current_events)
+        print("Inferred event IDs:", current_event_id)
+        
+        event_id = {'CIRCLE': current_event_id['CIRCLE'], 
+                    'ARROW LEFT': current_event_id['ARROW LEFT'], 
+                    'ARROW RIGHT': current_event_id['ARROW RIGHT']}
 
-    # Extract the windows
-    for window_id in range(nwindows):
-        start = window_starts[window_id]
-        end = window_ends[window_id]
+        # NOTE: Might need to ajust event id numbers for further classfication
+        # For now: {'rest': 29, 'left_hand': 24, 'right_hand': 26}
 
-        window = eeg[:, start:end]
-        windows[window_id, :, :] = window
+        # NOTE: For Dino, we have different events, so we need to handle them separately
+        ''' Events IDs for Dino files
+        {np.str_(''): 1, np.str_('ARROW LEFT ONSET'): 2, 
+         np.str_('ARROW RIGHT ONSET'): 3, 
+         np.str_('CIRCLE ONSET'): 4, 
+         np.str_('JUMP'): 5, 
+         np.str_('JUMP FAIL'): 6}
+         '''
+        # print(current_event_id)
+        selected_event_id.update(event_id)
 
-    return windows
+        # Save files
+        base_name = file_path.stem  # filename without extension
+        raw.info['subject_info'] = {'id': 110}
+        raw.save(raw_save_dir / f"{base_name}_raw.fif", overwrite=True)
+        np.save(event_save_dir / f"{base_name}_events.npy", current_events)
 
-# ==========================================
-# from t3_extract_features.py (Assignment 5)
-# ==========================================
-def do_grouped_train_test_split(
-    X: np.ndarray,
-    y: np.ndarray,
-    groups: np.ndarray,
-    random_state: int = 42,
-    test_size: float = 0.15,
-) -> dict:
-    """
-    Perform grouped split into train and test sets.
-    Ensures that groups are not split across sets (no leakage).
+        loaded_raws.append(raw)
+        loaded_events.append(current_events)
 
-    Args:
-        X (np.ndarray): Feature matrix.
-        y (np.ndarray): Label array.
-        groups (np.ndarray): Group identifiers (e.g., trial_ids).
-        random_state (int): Seed for reproducibility.
-        test_size (float): Proportion of groups for the test set.
+    # Save the inferred event_id for future runs
+    with open(event_id_path, "w") as f:
+        json.dump(selected_event_id, f, indent=2)
 
-    Returns:
-        dict: Dictionary containing split arrays (x_train, y_train, etc.)
-              and their corresponding original indices (train_idx, etc.).
-    """
+    return loaded_raws, loaded_events, selected_event_id, [110] * len(loaded_raws)
 
-    # Single Split: Separate Test set from Train set
-    gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
-
-    # split returns indices relative to the array passed to it
-    train_idx, test_idx = next(gss.split(X, y, groups=groups))
-
-    # Create the Test set
-    X_test = X[test_idx]
-    y_test = y[test_idx]
-    groups_test = groups[test_idx]
-
-    # Create the Train set
-    X_train = X[train_idx]
-    y_train = y[train_idx]
-    groups_train = groups[train_idx]
-
-    return {
-        "x_train": X_train,
-        "y_train": y_train,
-        "train_idx": train_idx,
-        "groups_train": groups_train,
-        "x_test": X_test,
-        "y_test": y_test,
-        "test_idx": test_idx,
-        "groups_test": groups_test,
-    }
-
-
-
-def do_grouped_cv_splits(X: np.ndarray,
-    y: np.ndarray,
-    groups: np.ndarray,
-    n_splits: int = 5,
-) -> dict: 
-    """
-    Perform grouped split into train and val sets for cross-validation.
-    Ensures that groups are not split across sets (no leakage).
-
-    Args:
-        X (np.ndarray): Feature matrix.
-        y (np.ndarray): Label array.
-        groups (np.ndarray): Group identifiers (e.g., trial_ids).
-        n_splits (int): Number of splits (folds).
-
-    Returns:
-        dict: Dictionary containing split arrays (x_train, y_train, etc.)
-              and their corresponding original indices (train_idx, etc.).
-    """
-    
-    # Initialize GroupKFold with n_splits folds
-    group_kfold = GroupKFold(n_splits=n_splits)
-
-    # Store the splits
-    cv_splits = {}
-
-    # Store the group indices of splits
-    train_val_idxs = []
-    for train_idx, val_idx in group_kfold.split(X, y, groups=groups):
-        train_val_idxs.append((train_idx, val_idx))
-
-    for fold, (train_idx, val_idx) in enumerate(train_val_idxs):
-        X_train, X_val = X[train_idx], X[val_idx]
-        y_train, y_val = y[train_idx], y[val_idx]
-        groups_train = groups[train_idx]
-        groups_val = groups[val_idx]
-        cv_splits[f"fold{fold}"] = {
-                            "x_train": X_train,
-                            "y_train": y_train,
-                            "train_idx": train_val_idxs[fold][0],
-                            "groups_train": groups_train,
-                            "x_val": X_val,
-                            "y_val": y_val,
-                            "val_idx": train_val_idxs[fold][1],
-                            "groups_val": groups_val
-
-                        }
-    return cv_splits
 
 
 # ==========================================
-# LOADING PHYSIONET DATA
+sub_raws, sub_events, sub_event_id, sub_ids = load_target_subject_data(
+    parent_of_root=parent_of_root,
+    source_folder=str(Path(parent_of_root) / "data" / "eeg" / "sub-P999" / "eeg"),
+    task_type="arrow",
+    limit=None)
+
+print(sub_event_id)
+print(f"Loaded {len(sub_raws)} raws from target subject data.")
+print("Subject IDs:", sub_ids)
 # ==========================================
-print("\n\
-------------------------------------------\n\
-Loading Physionet data\n\
-------------------------------------------")
 
-dataset = PhysionetMI(imagined=True, executed=False)
-dataset.feet_runs = []
-all_subjects = dataset.subject_list
-remove = [88, 92, 100]      # despite report, subjects 88, 92 and 100 were sampled with 128 Hz
-subjects = [x for x in all_subjects if x not in remove]
 
-subjects = all_subjects[1:2] # TODO: Fix code crushes if performing autoreject on 5+ subjects
-# print(dataset.events)  {'left_hand': 2, 'right_hand': 3, 'feet': 5, 'hands': 4, 'rest': 1}
-
-channels = [
-        "Fp1",
-        "Fp2",
-        "T8",
-        "F4",
-        "Fz",
-        "F3",
-        "T7",
-        "C4",
-        "Cz",
-        "C3",
-        "P4",
-        "Pz",
-        "P3",
-        "PO8",
-        "Oz",
-        "PO7",
-    ]
-
-raw_dict = dataset.get_data(subjects=subjects)
-''' E.g. for subject 2:
-{2: 
-    {'0': 
-        {'0': <RawEDF | S002R04.edf, 65 x 19680 (123.0 s), ~9.8 MiB, data loaded>, 
-         '1': <RawEDF | S002R08.edf, 65 x 19680 (123.0 s), ~9.8 MiB, data loaded>, 
-         '2': <RawEDF | S002R12.edf, 65 x 19680 (123.0 s), ~9.8 MiB, data loaded>
-        }
-    }
-}
 '''
-raws_concatenated = {}
-
-for subject in subjects:
-    raw_objects = []
-    for session in raw_dict[subject]:   # subject level
-        for run in raw_dict[subject][str(session)]:  # run level
-            raw = raw_dict[subject][str(session)][str(run)]
-            raw_objects.append(raw)
-
-    raws_concatenated[subject] = mne.concatenate_raws(raw_objects)
-
-raw = mne.concatenate_raws(list(raws_concatenated.values()))
-
-events = mne.find_events(raw)
-# Print unique event IDs
-unique_event_ids = np.unique(events[:, 2])
-print("Unique event IDs:", unique_event_ids)  # [1, 2, 3]
-
-
-raw = raw.copy().pick(channels) # pick 16 channels out of 64
-
-
-# ---- Filter design: causal IIR Butterworth band‑pass (8–30 Hz) ----
-lowcut = 8.0
-highcut = 30.0
-frequencies = [lowcut, highcut]
-order = 4
-fs = 160.0 # sampling frequency
-worN = 4096
-
-# Use SOS for actual filtering (stability)
-sos = scipy.signal.butter(order, Wn=np.array(frequencies), btype="bandpass", fs=fs, output="sos")
-
-# Apply bandpass filter
-signal = raw.get_data()
-print(signal.shape)
-filtered_signal = scipy.signal.sosfilt(sos, signal)
-
-# Create a new Raw object with the filtered data
-filtered_raw = raw.copy()
-filtered_raw._data = filtered_signal
-
-event_id = {
-    'rest': 1,
-    'left_hand': 2,
-    'right_hand': 3
-}
-
-# TODO: What was meant by the baseline? Should we include it?
-
-epochs = Epochs(
-    filtered_raw,
-    events,
-    event_id=event_id,
-    tmin=0.3,
-    tmax=3.3, 
-    baseline=None, 
-    preload=True         
-) 
-print("Autoreject:")
-print(f"Number of epochs before cleaning: {epochs.get_data().shape}")
-
-ar = AutoReject(n_interpolate=[1, 2, 4, 8, 16], random_state=97, verbose=False)
-# TODO: do we need to fit-transform on the whole data and not only on training? (NOT on testing though?)
-phys_epochs_clean, log = ar.fit_transform(epochs, return_log=True)
-thresholds = ar.threshes_       # Dict of channel-level peak-to-peak thresholds
-
-phys_trials = phys_epochs_clean.get_data()
-print(f"Number of trials after cleaning: {phys_trials.shape}")
-
-phys_right_trials = phys_epochs_clean["right_hand"].get_data()
-phys_left_trials = phys_epochs_clean["left_hand"].get_data()
-phys_rest_trials = phys_epochs_clean["rest"].get_data()
-print(f"Number of right trials after cleaning: {phys_right_trials.shape}")
-print(f"Number of left trials after cleaning: {phys_left_trials.shape}")
-print(f"Number of rest trials after cleaning: {phys_rest_trials.shape}")
-
-
+# NOTE: The following is an example of how to use the loaded data for you guys as a reference
+# on how the data could be processed further.
+# TODO: Needs to be removed from the final version.
 # ==========================================
-# LOADING TARGET-SUBJECT DATA
+# Small example to load data
 # ==========================================
-print("\n\
-------------------------------------------\n\
-Loading target-subject data\n\
-------------------------------------------")
 
-# For now take only this file since P999 data does not have some channels we are using above
-mi_files = [ Path(parent_of_root) / "data" / "sub-P554" / "eeg" / "sub-P554_ses-S002_task-Default_run-001_eeg.xdf"
-        ]
+subjects_to_load = list(range(1, 2))
 
-subj_raws = []
-
-for f in mi_files:
-    fp = f.resolve()
-    # print(fp)
-    raw, markers, channel_labels = get_raw_offline(fp)
-    resampled_raw = raw.resample(160)           # original sampling frequency = 250 
-    raw = resampled_raw
-    raw = raw.copy().pick(channels)
-    subj_raws.append(raw)
-
-subj_raw = mne.concatenate_raws(subj_raws)
-
-# Apply bandpass filter
-subj_signal = subj_raw.get_data()
-subj_filtered_signal = scipy.signal.sosfilt(sos, subj_signal)
-
-# Create a new Raw object with the filtered data
-subj_filtered_raw = subj_raw.copy()
-subj_filtered_raw._data = subj_filtered_signal
-
-# Extract the epochs
-subj_epochs, _, _ = get_epochs(
-    subj_filtered_raw,
-    markers,  # ALL markers (of all events)
-    tmin=0.3, # Start after the cue period to reduce influence of visual evoked potentials
-    tmax=3.3,
+physionet_loaded_raws, physionet_loaded_events, physionet_event_id, physionet_subject_ids = load_physionet_data(
+    subjects=subjects_to_load,
+    parent_of_root=parent_of_root
 )
 
-# Remove bad channels - epochs
-print("Autoreject:")
-print(f"Number of epochs before cleaning: {subj_epochs.get_data().shape}")
-subj_epochs_clean, log = ar.fit_transform(subj_epochs, return_log=True)
-subj_trials = subj_epochs_clean.get_data()
-print(f"Number of trials after cleaning: {subj_trials.shape}")
-
-subj_right_trials = subj_epochs_clean["ARROW RIGHT"].get_data()
-subj_left_trials = subj_epochs_clean["ARROW LEFT"].get_data()
-subj_rest_trials = subj_epochs_clean["CIRCLE"].get_data()
-print(f"Number of right trials after cleaning: {subj_right_trials.shape}")
-print(f"Number of left trials after cleaning: {subj_left_trials.shape}")
-print(f"Number of rest trials after cleaning: {subj_rest_trials.shape}")
-
-
-# Define classes
-RIGHT_HAND = 3
-LEFT_HAND = 2
-REST = 1
-
-phys_trials = np.concatenate((phys_right_trials, phys_left_trials, phys_rest_trials), axis=0)
-subj_trials = np.concatenate((subj_right_trials, subj_left_trials, subj_rest_trials), axis=0)
-mi_trials = np.concatenate((phys_trials, subj_trials), axis=0)
-
-mi_labels = np.array([RIGHT_HAND] * phys_right_trials.shape[0] + [LEFT_HAND] * phys_left_trials.shape[0] + [REST] * phys_rest_trials.shape[0] +
-                     [RIGHT_HAND] * subj_right_trials.shape[0] + [LEFT_HAND] * subj_left_trials.shape[0] + [REST] * subj_rest_trials.shape[0])
-
-
-
-print("\n\
-------------------------------------------\n\
-Concatenated trials\n\
-------------------------------------------")
-print(f'trials type: {type(mi_trials)}, trials shape: {mi_trials.shape}') # Data in shape (n_trials, n_channels, n_samples)
-print(f'lables type: {type(mi_labels)}, labels shape: {mi_labels.shape}')
-
+print(f"Loaded {len(physionet_loaded_raws)} subjects from Physionet.")
+print("Subject IDs:", physionet_subject_ids)
 
 # ==========================================
-# BUILDING WINDOWED TRIALS
+# SAMPLE preprocessing: Filtering, Epoching, Metadata attachment with the function above
 # ==========================================
+# Assume 'loaded_raws' and 'loaded_events' are the lists from the physionet loading function
+from mne import Epochs, pick_types
+all_epochs_list = []
 
-print("\n\
-------------------------------------------\n\
-Building windowed trials\n\
-------------------------------------------")
-windowed_trials = []
-windowed_labels = []
-trial_ids = []
+for raw, events, sub_id in zip(physionet_loaded_raws, physionet_loaded_events, physionet_subject_ids):
+    # A. Filtering (Subject identity is safe inside the 'raw' object)
+    raw.filter(7., 30., fir_design='firwin', skip_by_annotation='edge')
+    
+    # B. Create Epochs
+    epochs = mne.Epochs(raw, events, event_id=physionet_event_id, tmin=-0.2, tmax=4.0, preload=True)
+    
+    # C. ATTACH METADATA
+    # We create a dataframe where each row corresponds to an epoch (trial)
+    metadata = pd.DataFrame({
+        'subject_id': [sub_id] * len(epochs),
+        'condition': epochs.events[:, 2]  # Optional: track class labels here too
+    })
+    epochs.metadata = metadata
+    
+    all_epochs_list.append(epochs)
 
-for i, eeg in enumerate(mi_trials):
-    windows = extract_overlapping_windows(
-        eeg, window_size=160, step_size=32
-    )
-    windowed_trials.append(windows)
-    windowed_labels.extend([mi_labels[i]] * windows.shape[0])
-    trial_ids.extend([i] * windows.shape[0])
-
-windowed_trials = np.concatenate(windowed_trials, axis=0)
-windowed_labels = np.array(windowed_labels)
-trial_ids = np.array(trial_ids)
-print(f"Windowed trials shape: {windowed_trials.shape}")
-print(f"Windowed labels shape: {windowed_labels.shape}")
-print(f"Trial IDs shape: {trial_ids.shape}")
+# D. Concatenate all subjects into one object
+combined_epochs = mne.concatenate_epochs(all_epochs_list)
 
 # ==========================================
-# SPLITTING THE DATA - TRAIN AND VAL FOR CV
+# SAMPLE usage with Scikit-Learn GroupKFold
 # ==========================================
-# Fixed train and validation splits for reproducibility
+# Prepare for Scikit-Learn
+X = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
+y = combined_epochs.events[:, 2] # The labels (e.g., 1, 2, 3)
+groups = combined_epochs.metadata['subject_id'].values  # Subject IDs for grouping
 
-cv_splits = do_grouped_cv_splits(windowed_trials, windowed_labels, trial_ids, n_splits=5)
+# Cross-Validation
+from sklearn.model_selection import GroupKFold
+gkf = GroupKFold(n_splits=5)
 
+for train_idx, test_idx in gkf.split(X, y, groups=groups):
+    X_train, X_test = X[train_idx], X[test_idx]
+    y_train, y_test = y[train_idx], y[test_idx]
+    print(f"Train subjects: {np.unique(groups[train_idx])}, Test subjects: {np.unique(groups[test_idx])}")
 
-# =========================================================
-# SPLITTING THE DATA - TRAIN AND TEST FOR FINAL EVALUATION
-# =========================================================
-
-data_splits = do_grouped_train_test_split(
-    windowed_trials,
-    windowed_labels,
-    trial_ids,
-    random_state=42,
-    test_size=0.2,
-)
-
-X_train = data_splits["x_train"]
-y_train = data_splits["y_train"]
-groups_train = data_splits["groups_train"]
-X_test = data_splits["x_test"]
-y_test = data_splits["y_test"]
-groups_test = data_splits["groups_test"]
-
-
-
+'''
 
 
 
