@@ -7,6 +7,7 @@ upcoming online BCI pipelines:
 
 - `SAEModel.fit(...)` trains from numpy arrays.
 - `SAEModel.predict(...)` predicts from numpy arrays.
+- `SAEModel.predict_proba(...)` returns class probabilities from numpy arrays.
 - `SAEModel.save(...)` and `SAEModel.load(...)` persist and restore models.
 
 The heavy lifting (architecture, lightning training loop, datasets) remains
@@ -184,7 +185,8 @@ class SAEModel:
 
     Usage:
         model = SAEModel().fit(signals, task_labels, day_labels)
-        denoised = model.predict(noisy_signals, day_labels)
+        preds = model.predict(noisy_signals, day_labels)
+        probs = model.predict_proba(noisy_signals, day_labels)
         model.save("/path/to/ckpt.pt")
         restored = SAEModel.load("/path/to/ckpt.pt")
     """
@@ -223,13 +225,20 @@ class SAEModel:
         dataset = _NumpySAEDataset(signals, task_labels, day_labels)
 
         if self.model_adjustments is None:
-            # Use the explicit configuration from the reference notebook to avoid
-            # automatic search. Adjust if you need different lengths.
-            self.model_adjustments = {
-                "encoder_pad": [1, 1, 1],
-                "decoder_pad": [1, 0, 1, 0, 1, 2],
-                "latent_sz": 160,
-            }
+            # Automatically compute model adjustments based on signal length
+            signal_length = signals.shape[2]  # Get time dimension
+            try:
+                self.model_adjustments = _predict_adjustments(signal_length, self.filters)
+                print(f"Auto-computed model adjustments for signal length {signal_length}: "
+                      f"latent_sz={self.model_adjustments['latent_sz']}")
+            except ValueError as e:
+                # Fallback to default if auto-computation fails
+                print(f"Warning: Could not auto-compute adjustments, using defaults. Error: {e}")
+                self.model_adjustments = {
+                    "encoder_pad": [1, 1, 1],
+                    "decoder_pad": [1, 0, 1, 0, 1, 2],
+                    "latent_sz": 160,
+                }
 
         self._meta = {
             "n_channels": dataset.n_channels,
@@ -258,7 +267,7 @@ class SAEModel:
         self,
         signals: np.ndarray,
         day_labels: Optional[np.ndarray] = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> np.ndarray:
         """
         Run end-to-end classification (denoise + CSP/SVM) using a trained or restored SAE.
 
@@ -270,12 +279,35 @@ class SAEModel:
 
         denoised = self._denoise(signals, day_labels=day_labels)
         preds = self._csp_clf.predict(np.float64(denoised))
-        # Not all sklearn classifiers expose predict_proba.
-        if hasattr(self._csp_clf, "predict_proba"):
-            probs = self._csp_clf.predict_proba(np.float64(denoised))
-        else:
-            probs = None
-        return preds, probs
+        return preds
+
+    def predict_proba(
+        self,
+        signals: np.ndarray,
+        day_labels: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """
+        Return class probabilities for end-to-end classification (denoise + CSP/SVM).
+
+        signals: numpy array shaped [N, C, T]
+        day_labels: optional day/session ids for consistency; if omitted, zeros are used.
+
+        Returns:
+            numpy array of shape [N, num_classes] with class probabilities.
+            Raises RuntimeError if the classifier does not support predict_proba.
+        """
+        if self._denoiser is None or self._denoiser.model is None or self._csp_clf is None:
+            raise RuntimeError("Model is not trained or loaded. Call `fit` or `load` first.")
+
+        if not hasattr(self._csp_clf, "predict_proba"):
+            raise RuntimeError(
+                f"Classifier {type(self._csp_clf).__name__} does not support predict_proba(). "
+                "Please use a classifier that provides probability estimates."
+            )
+
+        denoised = self._denoise(signals, day_labels=day_labels)
+        probs = self._csp_clf.predict_proba(np.float64(denoised))
+        return probs
 
     # ------------------------- Persistence helpers ---------------------- #
 

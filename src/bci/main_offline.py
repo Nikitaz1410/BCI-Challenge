@@ -44,6 +44,7 @@ x_filtered_train = filter.apply_filter_offline(x_raw_train)
 x_filtered_test = filter.apply_filter_offline(x_raw_test)
 
 # TODO: Epoch the Data
+# ATTENTION: DATA LEAKAGE HERE!!! Overlapping windows which are later split in train and val
 train_epochs, train_labels = extract_epochs(
     raw=x_filtered_train, events=y_train, event_id=sessions_id_train, config=config
 )
@@ -51,7 +52,15 @@ test_epochs, test_labels = extract_epochs(
     raw=x_filtered_test, events=y_test, event_id=sessions_id_test, config=config
 )
 
-# Begin Cross Validation just on the training data and test on finas test data only in the end
+# Begin Cross Validation just on the training data and test on finas test data only in the end # TODO: Implement Cross Validation
+# 1. Split the training data into k folds
+# 2. For each fold, train the model on the training data and test on the validation data
+# 3. Compute the metrics for each fold
+# 4. Compute the average metrics across all folds
+# 5. Compute the final metrics on the test data
+# 6. Print the metrics
+# 7. Save the model
+
 
 # (optional) Normalize the data
 train_epochs = recentering(train_epochs)
@@ -59,12 +68,15 @@ test_epochs = recentering(test_epochs)
 
 # TODO: Remove Artifacts
 ar.get_rejection_thresholds(train_epochs, config)
-clean_train_epochs, clean_train_labels = ar.reject_bad_epochs(
-    train_epochs, train_labels
-)
-clean_test_epochs, clean_test_labels = ar.reject_bad_epochs(
-    test_epochs, test_labels
-)
+clean_train_epochs, clean_train_labels = ar.reject_bad_epochs(train_epochs, train_labels)
+clean_test_epochs, clean_test_labels = ar.reject_bad_epochs(test_epochs, test_labels)
+# @Amal could you please make sure that the session ids in sessions_id_train and sessions_id_test are still correct after the autorejecting potentially removing epochs
+
+X_train, y_train, sessions_id_train = window_data(clean_train_epochs, clean_train_labels, sessions_id_train)
+X_test, y_test, sessions_id_test = window_data(clean_test_epochs, clean_test_labels, sessions_id_test)
+
+# @Amal please make sure the sessions_id_train and sessions_id_test are still correct after the AR potentially removing epochs
+# + please  window the data here (inside the CV loop!) as discussed with Iustin
 # Amal END
 
 # Nikita START
