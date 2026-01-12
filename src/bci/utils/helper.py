@@ -1,17 +1,16 @@
-# Authors: BCI chair
-
 import numpy as np
 import mne
 from pathlib import Path
 import pyxdf
 
 
-def get_raw_offline(
+def get_raw_xdf_offline(
     trial: Path, marker_durations: list[float] | None = None
 ) -> tuple[mne.io.RawArray, list, list[str]]:
     """
     Function to load the raw data from the trial and return the raw data object, the markers and the channel labels.
-
+    Based on the implementation from https://gitlab.lrz.de/students2/baseline-bci. 
+    
     Parameters
     ----------
     trial : Path
@@ -27,7 +26,22 @@ def get_raw_offline(
         List of markers.
     channel_labels : list[str]
         List of channel labels.
+
+    Notes
+    -----
+    The current implementation processes two types of recordings:
+    1. Recordings with no channel information (assigns predefined channel labels)
+    2. Recordings where channel information exactly matches predefined channel labels
+    
+    Number of channels should be 16, the order and naming of channels should match the list of channel_labels below.
+    Function may need to be adapted for other recordings.
     """
+
+    # Define channel labels
+    expected_channel_labels = [
+        "Fp1","Fp2","F3","Fz","F4","T7","C3","Cz","C4","T8","P3","Pz","P4","PO7","PO8","Oz",
+    ]  # Manually set for g.Nautilus, standard 10-20 montage
+
     # Load the data
     if marker_durations is None:
         marker_durations = [3, 1, 3]
@@ -61,61 +75,26 @@ def get_raw_offline(
         else:
             event_channel = i  # markers stream
 
-    # Get the channel labels
-    # channels = streams[eeg_channel]["info"]["desc"][0]["channels"][0]["channel"]
-    # channel_labels = [channel["label"][0] for channel in channels]
-    channel_labels = [
-        "Fp1",
-        "Fp2",
-        "T8",
-        "F4",
-        "Fz",
-        "F3",
-        "T7",
-        "C4",
-        "Cz",
-        "C3",
-        "P4",
-        "Pz",
-        "P3",
-        "PO8",
-        "Oz",
-        "PO7",
-        "keyboard",
-    ]  # Manually set for g.Nautilus
+    # print(streams[eeg_channel]["info"])
 
-    # same for pupil channel
-    if pupil_channel is not None:
-        pupil_channels = streams[pupil_channel]["info"]["desc"][0]["channels"][0][
-            "channel"
-        ]
-        pupil_labels = [channel["label"][0] for channel in pupil_channels]
-        print("Pupil channels:", pupil_labels)
-    if pupil_capture_channel is not None:
-        pupil_capture_channels = streams[pupil_capture_channel]["info"]["desc"][0][
-            "channels"
-        ][0]["channel"]
-        pupil_capture_labels = [
-            channel["label"][0] for channel in pupil_capture_channels
-        ]
-        print("Pupil capture channels:", pupil_capture_labels)
-    if pupil_capture_fixations_channel is not None:
-        pupil_capture_fixations_channels = streams[pupil_capture_fixations_channel][
-            "info"
-        ]["desc"][0]["channels"][0]["channel"]
-        pupil_capture_fixations_labels = [
-            channel["label"][0] for channel in pupil_capture_fixations_channels
-        ]
-        print("Pupil capture fixations channels:", pupil_capture_fixations_labels)
+    # Validate channel information:
+    if streams[eeg_channel]["info"]["desc"] != [None]:  
+        print("Channel info found in the recording.")
+        # Channel info is available - check if it matches expected labels
+        channel_dict = streams[eeg_channel]["info"]["desc"][0]["channels"][0]["channel"]
+        eeg_channels = [channel["label"][0] for channel in channel_dict]
+        
+        # Check if channels match expected labels
+        if eeg_channels != expected_channel_labels:
+            # Channel info exists but doesn't match - filter out this recording
+            return None, None, None
+    else:  
+        print("No channel info found in the recording.")
+        # No channel info available - use predefined channel labels
+        channel_labels = expected_channel_labels
+
 
     # Create montage object - this is needed for the raw data object (Layout of the electrodes)
-    """
-    montage_dict = {
-        channel["label"][0]: [float(channel["location"][0][dim][0]) for dim in "XYZ"]
-        for channel in channels
-    }
-    montage = mne.channels.make_dig_montage(ch_pos=montage_dict, coord_frame="head")
-    """
     montage = mne.channels.make_standard_montage("standard_1020")
     ts = streams[eeg_channel]["time_series"][-1]
     print(
@@ -124,12 +103,17 @@ def get_raw_offline(
 
     # Get EEG data - https://mne.tools/dev/auto_examples/io/read_xdf.html#ex-read-xdf
     data = streams[eeg_channel]["time_series"].T * 1e-6  # scaling the data to volts
+    print(len(data), data.shape)
 
-    # exclude last channel if it is impedance
-    if channel_labels[-1].lower() in ["ts", "impedances", "keyboard"]:
-        data = data[:-1, :]
-        channel_labels = channel_labels[:-1]
-    # Get sampling frequency and create info object
+    # # exclude last channel if it is impedance
+    # if channel_labels[-1].lower() in ["ts", "impedances", "keyboard"]:
+    #     data = data[:-1, :]
+    #     channel_labels = channel_labels[:-1]
+
+    # Verify we have the correct number of channels
+    if data.shape[0] != len(channel_labels):
+        print(f"Data has {data.shape[0]} channels, but expected {len(channel_labels)} channels")
+        return None, None, None
 
     # Get sampling frequency and create info object
     sfreq = float(streams[eeg_channel]["info"]["nominal_srate"][0])
@@ -173,113 +157,8 @@ def get_raw_offline(
     return raw_data, markers, channel_labels
 
 
-def get_epochs(
-    raw_data: mne.io.Raw,
-    markers: list,
-    tmin: float = 0.3,
-    tmax: float = 1.3,
-    baseline: tuple[float, float] | None = None,
-    event_dict: dict | None = None,
-) -> tuple[mne.Epochs, dict]:
-    """
-    Get the epochs from the raw data based on the markers.
-
-    Parameters
-    ----------
-    raw_data : mne.io.RawArray
-        Raw data object.
-    markers : list
-        List of markers.
-    tmin : float, optional
-        Start time of the time window (epoch). The default is 0.3.
-    tmax : float, optional
-        End time of the time window (epoch). The default is 1.3.
-    baseline : tuple, optional
-        Window used for baseline correction. The default is None.
-    event_dict : dict, optional
-        Dictionary of event IDs. The default is None.
-    Returns
-    -------
-    epochs : mne.Epochs
-        Epochs object.
-    filtered_events_id : dict
-        Dictionary of filtered events.
-
-    """
-    # Get the events based on the annotations (in our case the ARROW markers)
-    markers_dict = {marker: i for i, marker in enumerate(markers)}
-    if event_dict is not None:
-        events, events_id = mne.events_from_annotations(
-            raw_data, event_id=event_dict, verbose=False
-        )
-    else:
-        events, events_id = mne.events_from_annotations(
-            raw_data, event_id=markers_dict, verbose=False
-        )
-
-    # Get the events that are in the marker_IDs
-    filtered_events_id = {key: value for key, value in events_id.items() if "" in key}
-    tmin_ = None
-
-    # Adapt time window in case we need to do baseline correction
-    if baseline:
-        tmin_ = tmin
-        tmin = baseline[0]
-    else:
-        baseline = None
-
-    # Create epochs
-    epochs = mne.Epochs(
-        raw_data,
-        events=events,
-        tmin=tmin,
-        tmax=tmax,
-        event_id=filtered_events_id,
-        baseline=baseline,
-        preload=True,
-        verbose=False,
-        event_repeated="drop",
-    )
-
-    # Crop the epochs to the desired time window
-    if tmin_ is not None:
-        epochs.crop(tmin=tmin_, tmax=tmax)
-
-    return epochs, events, filtered_events_id
 
 
-from mne.time_frequency import psd_array_multitaper
 
 
-def compute_psd(data, fmin, fmax):
-    psd, freqs = psd_array_multitaper(
-        data, sfreq=250, fmin=fmin, fmax=fmax, verbose=False
-    )
-    return psd
 
-
-from mne.decoding import CSP
-
-# class for computing selected features training and inference
-from sklearn.base import BaseEstimator, TransformerMixin
-
-
-class compute_features(BaseEstimator, TransformerMixin):
-    def __init__(self, fmin=8, fmax=30):
-        self.fmin = fmin
-        self.fmax = fmax
-        self.csp = CSP(n_components=4, reg=None, log=True, norm_trace=False)
-
-    def fit(self, X, y=None):
-        self.csp.fit(X, y)
-        return self
-
-    def transform(self, X):
-        psd_features = compute_psd(X, fmin=self.fmin, fmax=self.fmax)
-        psd_features = psd_features.reshape(
-            psd_features.shape[0], -1
-        )  # Flatten the PSD features
-        csp_features = self.csp.transform(X)
-
-        features = np.concatenate((psd_features, csp_features), axis=-1)
-        return features

@@ -2,7 +2,7 @@
 BCI Pipeline Modules
 Exports all processing modules
 """
-
+"""
 import importlib.util
 from pathlib import Path
 
@@ -17,3 +17,5 @@ else:
     raise ImportError(f"Could not find preprocessing module at {_preprocessing_path}")
 
 __all__ = ["preprocessing"]
+
+"""
