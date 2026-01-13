@@ -14,7 +14,7 @@ Usage:
     physionet_event_id, 
     physionet_subject_ids = loading.load_physionet_data(
         subjects=list(range(1, 6)),
-        parent_of_root="/path/to/parent/of/root"
+        root="/path/to/root_dir"
     )
     
     # Load Target Subject data (Subject 110)
@@ -22,8 +22,8 @@ Usage:
     target_events,
     target_event_id,
     target_subject_ids = loading.load_target_subject_data(
-        parent_of_root="/path/to/parent/of/root",
-        source_folder="/path/to/source/xdf/files",
+        root="<BCI-Challange root directory>",
+        source_folder="/root/data/eeg/sub-P999/eeg",
         task_type="arrow",  # or "dino" or "all"
         limit=5  # Optional limit on number of files to load
     )
@@ -47,19 +47,16 @@ import moabb
 
 # Add the root directory to the Python path
 root_dir = str(Path(__file__).resolve().parents[3])  # BCI-Challange directory
-parent_of_root = str(Path(__file__).resolve().parents[4])  # one level above
-
 sys.path.append(root_dir)
-sys.path.append(parent_of_root)
 
-sys.path.append("..")
+# sys.path.append("..")
 
 moabb.set_log_level("info")
 warnings.filterwarnings("ignore")
 
 
 
-def get_raw_xdf_offline(
+def _get_raw_xdf_offline(
     trial: Path, marker_durations: list[float] | None = None
 ) -> tuple[mne.io.RawArray, list, list[str]]:
     """
@@ -216,7 +213,59 @@ def get_raw_xdf_offline(
 
 
 
-def load_physionet_data(subjects: list[int], parent_of_root: str) -> tuple:
+def _standardize_and_map(raw, target_event_id, mode="arrow"):
+    """
+    Standardizes markers based on the task type (dino or arrow).
+    
+    Args:
+        raw: MNE Raw object.
+        target_event_id: The final integer mapping,
+        {
+            "rest": 1,
+            "left_hand": 2,
+            "right_hand": 3
+        }
+        mode: "arrow" or "dino"
+
+    NOTE: For Dino, we have different events, so we need to handle them separately
+        ''' Events IDs for Dino files
+        {np.str_(''): 1, np.str_('ARROW LEFT ONSET'): 2, 
+         np.str_('ARROW RIGHT ONSET'): 3, 
+         np.str_('CIRCLE ONSET'): 4, 
+         np.str_('JUMP'): 5, 
+         np.str_('JUMP FAIL'): 6}
+         '''
+    """
+    
+    # 1. Define mappings specific to each recording type
+    if mode == "dino":
+        rename_map = {
+            "ARROW LEFT ONSET": "left_hand",
+            "ARROW RIGHT ONSET": "right_hand",
+            "CIRCLE ONSET": "rest"
+        }   # For now, ignore JUMP and FAIL markers
+    else:  # "arrow" mode
+        rename_map = {
+            "ARROW LEFT": "left_hand",
+            "ARROW RIGHT": "right_hand",
+            "CIRCLE": "rest"
+        }
+
+    # 2. Apply the rename to the raw object
+    existing_descriptions = set(raw.annotations.description)
+
+    actual_map = {k: v for k, v in rename_map.items() if k in existing_descriptions}
+    raw.annotations.rename(actual_map)
+
+    # 3. Force extraction of ONLY the standardized keys
+    # Any annotation that didn't get renamed to 'left_hand' or 'right_hand' or 'rest'
+    # (like "RIGHT ONSET" in general mode) will be filtered out here.
+    events, _ = mne.events_from_annotations(raw, event_id=target_event_id)
+    
+    return events
+
+
+def load_physionet_data(subjects: list[int], root: str) -> tuple:
     '''Load Physionet Motor Imagery data for specified subjects.
     
     This function checks if the data is already saved on disk. If not, it downloads
@@ -227,8 +276,8 @@ def load_physionet_data(subjects: list[int], parent_of_root: str) -> tuple:
     ----------
     subjects : list[int]
         List of subject IDs to load. IDs are integers.
-    parent_of_root : str
-        Path to the parent directory of the root dataset folder.
+    root : str
+        Path to the root directory of the dataset.
 
     Returns
     -------
@@ -240,7 +289,7 @@ def load_physionet_data(subjects: list[int], parent_of_root: str) -> tuple:
         - subject_ids_out: List of subject IDs corresponding to the loaded data.
     '''
 
-    physionet_root = Path(parent_of_root) / "data" / "datasets" / "physionet"
+    physionet_root = Path(root) / "data" / "datasets" / "physionet"
     raw_dir = physionet_root / "raws"
     event_dir = physionet_root / "events"
     meta_dir = physionet_root / "metadata"
@@ -263,6 +312,14 @@ def load_physionet_data(subjects: list[int], parent_of_root: str) -> tuple:
         event_id = {'rest': event_dict['rest'], 
                     'left_hand': event_dict['left_hand'], 
                     'right_hand': event_dict['right_hand']}
+        
+        ''' The event id dict is:
+        event_id = {
+            "rest": 1,
+            "left_hand": 2,
+            "right_hand": 3
+        }
+        '''
         
         # Save event_id mapping
         with open(event_id_path, "w") as f:
@@ -342,9 +399,8 @@ def load_physionet_data(subjects: list[int], parent_of_root: str) -> tuple:
 
 
 
-# TODO: Function in progress
 def load_target_subject_data(
-    parent_of_root: str, 
+    root: str, 
     source_folder: str = None, 
     task_type: str = "all", 
     limit: int = None
@@ -355,7 +411,7 @@ def load_target_subject_data(
     2. If empty, processes XDF from source_folder.
     3. Infers and saves event_id mapping.
     """
-    target_dir = Path(parent_of_root) / "data" / "datasets" / "target"
+    target_dir = Path(root) / "data" / "datasets" / "target"
     raw_save_dir = target_dir / "raws"
     event_save_dir = target_dir / "events"
     event_id_path = target_dir / "event_id.json"
@@ -414,6 +470,12 @@ def load_target_subject_data(
 
     loaded_raws, loaded_events, selected_event_id = [], [], {}
     
+    target_event_id = {
+            "rest": 1,
+            "left_hand": 2,
+            "right_hand": 3
+            }       # Same as the Physionet event_id mapping
+
     channels = ["Fp1",
                 "Fp2",
                 "F3",
@@ -434,55 +496,33 @@ def load_target_subject_data(
     # --- STEP 3: PROCESS XDF AND INFER EVENT_ID ---
     for file_path in selected_files:
         print(f"Processing XDF: {file_path.name}")
-        raw, markers, channel_labels = get_raw_xdf_offline(file_path)
+        raw, markers, channel_labels = _get_raw_xdf_offline(file_path)
         
         if raw is None: continue
 
         raw.resample(160)
         raw.pick(channels)
 
-        # Rename annotations to standard labels (not sure if we need it though)
-        # mapping = {
-        #     "CIRCLE": "rest",
-        #     "ARROW LEFT": "left_hand",
-        #     "ARROW RIGHT": "right_hand"
-        # }
+        # current_events, current_event_id = mne.events_from_annotations(raw)
+        # print("Inferred event IDs:", current_event_id)
+        # print("\n")
 
-        # # Apply the rename directly to the raw object
-        # raw.annotations.rename(mapping)
+        task_mode = "dino" if "dino" in file_path.name.lower() else "arrow"
+        # Standardize and map using the specific mode
+        selected_events = _standardize_and_map(raw, target_event_id, mode=task_mode)
 
-        # Infer event_id: Get unique descriptions from annotations
-        # This builds a dictionary {description: integer} automatically
-        current_events, current_event_id = mne.events_from_annotations(raw)
-        # print(current_events)
-        print("Inferred event IDs:", current_event_id)
-        
-        event_id = {'CIRCLE': current_event_id['CIRCLE'], 
-                    'ARROW LEFT': current_event_id['ARROW LEFT'], 
-                    'ARROW RIGHT': current_event_id['ARROW RIGHT']}
+        # NOTE: consider using JUMP and JUMP FAIL as evaluation of how user performs?
 
-        # NOTE: Might need to ajust event id numbers for further classfication
-        # For now: {'rest': 29, 'left_hand': 24, 'right_hand': 26}
-
-        # NOTE: For Dino, we have different events, so we need to handle them separately
-        ''' Events IDs for Dino files
-        {np.str_(''): 1, np.str_('ARROW LEFT ONSET'): 2, 
-         np.str_('ARROW RIGHT ONSET'): 3, 
-         np.str_('CIRCLE ONSET'): 4, 
-         np.str_('JUMP'): 5, 
-         np.str_('JUMP FAIL'): 6}
-         '''
-        # print(current_event_id)
-        selected_event_id.update(event_id)
+        selected_event_id.update(target_event_id)
 
         # Save files
         base_name = file_path.stem  # filename without extension
         raw.info['subject_info'] = {'id': 110}
         raw.save(raw_save_dir / f"{base_name}_raw.fif", overwrite=True)
-        np.save(event_save_dir / f"{base_name}_events.npy", current_events)
+        np.save(event_save_dir / f"{base_name}_events.npy", selected_events)
 
         loaded_raws.append(raw)
-        loaded_events.append(current_events)
+        loaded_events.append(selected_events)
 
     # Save the inferred event_id for future runs
     with open(event_id_path, "w") as f:
@@ -492,37 +532,40 @@ def load_target_subject_data(
 
 
 
-# ==========================================
-# sub_raws, sub_events, sub_event_id, sub_ids = load_target_subject_data(
-#     parent_of_root=parent_of_root,
-#     source_folder=str(Path(parent_of_root) / "data" / "eeg" / "sub-P999" / "eeg"),
-#     task_type="arrow",
-#     limit=None)
 
-# print(sub_event_id)
-# print(f"Loaded {len(sub_raws)} raws from target subject data.")
-# print("Subject IDs:", sub_ids)
-# ==========================================
-
-
-'''
 # NOTE: The following is an example of how to use the loaded data for you guys as a reference
 # on how the data could be processed further.
 # TODO: Needs to be removed from the final version.
+
+'''
 # ==========================================
 # Small example to load data
 # ==========================================
-
+# Physionet
 subjects_to_load = list(range(1, 2))
 
 physionet_loaded_raws, physionet_loaded_events, physionet_event_id, physionet_subject_ids = load_physionet_data(
     subjects=subjects_to_load,
-    parent_of_root=parent_of_root
+    root=root_dir
 )
 
 print(f"Loaded {len(physionet_loaded_raws)} subjects from Physionet.")
 print("Subject IDs:", physionet_subject_ids)
 
+# Target Subject
+sub_raws, sub_events, sub_event_id, sub_ids = load_target_subject_data(
+    root=root_dir,
+    source_folder=str(Path(root_dir) / "data" / "eeg" / "sub-P999" / "eeg"),
+    task_type="arrow",
+    limit=None)
+
+print(sub_event_id)
+print(f"Loaded {len(sub_raws)} raws from target subject data.")
+print("Subject IDs:", sub_ids)
+
+'''
+
+'''
 # ==========================================
 # SAMPLE preprocessing: Filtering, Epoching, Metadata attachment with the function above
 # ==========================================
@@ -531,11 +574,13 @@ from mne import Epochs, pick_types
 all_epochs_list = []
 
 for raw, events, sub_id in zip(physionet_loaded_raws, physionet_loaded_events, physionet_subject_ids):
+    pass
+for raw, events, sub_id in zip(sub_raws, sub_events, sub_ids):
     # A. Filtering (Subject identity is safe inside the 'raw' object)
     raw.filter(7., 30., fir_design='firwin', skip_by_annotation='edge')
     
     # B. Create Epochs
-    epochs = mne.Epochs(raw, events, event_id=physionet_event_id, tmin=-0.2, tmax=4.0, preload=True)
+    epochs = mne.Epochs(raw, events, event_id=sub_event_id, tmin=-0.2, tmax=4.0, preload=True)
     
     # C. ATTACH METADATA
     # We create a dataframe where each row corresponds to an epoch (trial)
@@ -558,9 +603,9 @@ X = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
 y = combined_epochs.events[:, 2] # The labels (e.g., 1, 2, 3)
 groups = combined_epochs.metadata['subject_id'].values  # Subject IDs for grouping
 
-# Cross-Validation
+# Cross-Validation. Note: Does not work with mixed (physionet + target) data yet
 from sklearn.model_selection import GroupKFold
-gkf = GroupKFold(n_splits=5)
+gkf = GroupKFold(n_splits=5)  
 
 for train_idx, test_idx in gkf.split(X, y, groups=groups):
     X_train, X_test = X[train_idx], X[test_idx]
