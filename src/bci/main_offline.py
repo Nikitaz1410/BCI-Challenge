@@ -15,9 +15,18 @@ from sklearn.metrics import (
 
 from bci.loading.bci_config import load_config
 from bci.loading.data_acquisition import load_data, extract_baseline
-from bci.Loading.loading  import load_physionet_data, load_target_subject_data
+
+# Data-loading helpers (physionet + target subject loader)
+from bci.Loading.loading import load_physionet_data, load_target_subject_data
+
+# Epoch extraction (preprocessing helper)
+from bci.preprocessing.preprocessing import extract_epochs
+
+# Optional: filtering helper and CV helpers
 from bci.preprocessing.filtering import Filter
-from bci.preprocessing.epoching import extract_epochs  # f string error while loading
+from bci.Training.cv import grouped_kfold_indices
+from bci.preprocessing.filtering import Filter
+from bci.preprocessing.epoching import extract_epochs
 from bci.preprocessing.artefact_removal import ArtefactRemoval
 from bci.models.riemann import (
     RiemannianClf,
@@ -25,6 +34,13 @@ from bci.models.riemann import (
     compute_covariances,
 )
 from bci.evaluation.metrics import compute_ece, MetricsTable, compute_itr
+
+
+from bci.preprocessing.filters import (
+    filter_dataset_pair,
+    create_filter_from_config,
+)
+from bci.Training.trainer import run_cross_validation
 
 # =============================================================================
 # Main
@@ -69,12 +85,18 @@ x_raw_test, events_test, event_id_test, sub_ids_test = load_target_subject_data(
 # Daria END
 
 # Amal START
+config = load_config()
+filt = create_filter_from_config(config, online=False)
 # TODO: Filter the Data (No Notch for now)
-x_filtered_train = filter.apply_filter_offline(x_raw_train)
-x_filtered_test = filter.apply_filter_offline(x_raw_test)
+
+#change: perform offline filtering for train and test using the preprocessing helper
+x_filtered_train, x_filtered_test, filter_latency_ms = filter_dataset_pair(
+    x_raw_train, x_raw_test, config
+)
 
 # TODO: Epoch the Data
 # ATTENTION: DATA LEAKAGE HERE!!! Overlapping windows which are later split in train and val
+
 train_epochs, train_labels = extract_epochs(
     raw=x_filtered_train, events=y_train, event_id=sessions_id_train, config=config
 )
@@ -82,7 +104,18 @@ test_epochs, test_labels = extract_epochs(
     raw=x_filtered_test, events=y_test, event_id=sessions_id_test, config=config
 )
 
-# Begin Cross Validation just on the training data and test on finas test data only in the end # TODO: Implement Cross Validation
+# Begin Cross Validation just on the training data and test on finas test data only in the end 
+
+#change: run grouped CV and training in trainer.run_cross_validation to keep main minimal
+cv_out = run_cross_validation(
+    train_epochs,
+    train_labels,
+    sessions_id_train,
+    config,
+    n_splits=int(config.get("n_splits", 5)),
+)
+
+# Original TODO block (kept for traceability):
 # 1. Split the training data into k folds
 # 2. For each fold, train the model on the training data and test on the validation data
 # 3. Compute the metrics for each fold
@@ -93,20 +126,24 @@ test_epochs, test_labels = extract_epochs(
 
 
 # (optional) Normalize the data
-train_epochs = recentering(train_epochs)
-test_epochs = recentering(test_epochs)
+#train_epochs = recentering(train_epochs)
+#test_epochs = recentering(test_epochs)
 
 # TODO: Remove Artifacts
-ar.get_rejection_thresholds(train_epochs, config)
-clean_train_epochs, clean_train_labels = ar.reject_bad_epochs(train_epochs, train_labels)
-clean_test_epochs, clean_test_labels = ar.reject_bad_epochs(test_epochs, test_labels)
-# @Amal could you please make sure that the session ids in sessions_id_train and sessions_id_test are still correct after the autorejecting potentially removing epochs
+#change: Delegate AutoReject + windowing to preprocessing.autoreject_and_window
+from bci.preprocessing.preprocessing import autoreject_and_window
 
-X_train, y_train, sessions_id_train = window_data(clean_train_epochs, clean_train_labels, sessions_id_train)
-X_test, y_test, sessions_id_test = window_data(clean_test_epochs, clean_test_labels, sessions_id_test)
+# Fit AutoReject on training epochs and extract windows
+clean_train_epochs, X_train, y_train, sessions_id_train, ar = autoreject_and_window(
+    train_epochs, train_labels, sessions_id_train, config, ar=None, fit_ar=True
+)
 
-# @Amal please make sure the sessions_id_train and sessions_id_test are still correct after the AR potentially removing epochs
-# + please  window the data here (inside the CV loop!) as discussed with Iustin
+# Apply the fitted AutoReject to test epochs and extract windows
+clean_test_epochs, X_test, y_test, sessions_id_test, _ = autoreject_and_window(
+    test_epochs, test_labels, sessions_id_test, config, ar=ar, fit_ar=False
+)
+
+# @Amal please verify that sessions_id_train and sessions_id_test align with downstream assumptions
 # Amal END
 
 # Nikita START
@@ -138,7 +175,8 @@ train_time = round(end_train_time - start_train_time, 2)
 metrics_data["Train Time (ms)"] = train_time
 infer_time = round((end_eval_time - start_eval_time) / len(test_labels), 2)
 metrics_data["Infer. Time (ms)"] = infer_time
-filter_latency = round(filter.get_filter_latency(), 2)
+#change: use estimated offline latency from preprocessing helper (filter_dataset_pair)
+filter_latency = round(filter_latency_ms, 2)
 metrics_data["Avg. Filter Latency (ms)"] = filter_latency
 
 itr = compute_itr(

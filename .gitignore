@@ -222,3 +222,6 @@ __marimo__/
 
 # Local development files (not for version control)
 src/bci/2_preprocessing/daria.py
+tests/
+__pycache__/
+*.pyc

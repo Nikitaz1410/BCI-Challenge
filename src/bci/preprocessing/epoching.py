@@ -109,31 +109,35 @@ def do_grouped_train_test_split(
     }
 
 
-# Extract overlapping time windows of the trials for feature extraction
-def extract_overlapping_windows(eeg, window_size=250, step_size=16):
-    n_channels, n_samples = eeg.shape
+#change: moved window extraction to bci.preprocessing.windows
+# Re-export to preserve API used by older code
+from bci.preprocessing.windows import extract_overlapping_windows
 
-    window_length_samples = int(window_size)
-    window_shift_samples = int(step_size)
-
-    nwindows = int((n_samples - window_length_samples) / (window_shift_samples)) + 1
-
-    window_starts = np.arange(
-        0, n_samples - window_length_samples + 1, window_shift_samples
-    ).astype(int)
-    window_ends = window_starts + window_length_samples
-
-    windows = np.zeros((nwindows, n_channels, window_length_samples))
-
-    # Extract the windows
-    for window_id in range(nwindows):
-        start = window_starts[window_id]
-        end = window_ends[window_id]
-
-        window = eeg[:, start:end]
-        windows[window_id, :, :] = window
-
-    return windows
+# Original implementation (commented for traceability):
+# def extract_overlapping_windows(eeg, window_size=250, step_size=16):
+#     n_channels, n_samples = eeg.shape
+#
+#     window_length_samples = int(window_size)
+#     window_shift_samples = int(step_size)
+#
+#     nwindows = int((n_samples - window_length_samples) / (window_shift_samples)) + 1
+#
+#     window_starts = np.arange(
+#         0, n_samples - window_length_samples + 1, window_shift_samples
+#     ).astype(int)
+#     window_ends = window_starts + window_length_samples
+#
+#     windows = np.zeros((nwindows, n_channels, window_length_samples))
+#
+#     # Extract the windows
+#     for window_id in range(nwindows):
+#         start = window_starts[window_id]
+#         end = window_ends[window_id]
+#
+#         window = eeg[:, start:end]
+#         windows[window_id, :, :] = window
+#
+#     return windows
 
 
 # ==========================================

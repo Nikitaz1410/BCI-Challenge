@@ -55,6 +55,8 @@ import mne
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import warnings
+#change: added scipy import for latency estimation and FIR design
+import scipy.signal as signal
 
 # Optional dependencies
 try:
@@ -156,6 +158,15 @@ def filter_raw(
         raise ValueError(f"Unknown reference type: {reference}. Use 'M1_M2' or 'average'")
     
     return raw
+
+
+#change: filter helpers moved to `bci.preprocessing.filters` for better structure
+from bci.preprocessing.filters import (
+    get_filter_params_from_config,
+    create_filter_from_config,
+    estimate_filter_latency,
+    filter_dataset_pair,
+)
 
 
 # ============================================================================
@@ -277,6 +288,143 @@ def create_epochs(
         epochs.event_id = {"rest": 0, "right": 1, "left": 2}
     
     return epochs, event_dict
+
+
+#change: compatibility wrapper to preserve the old `extract_epochs(raw, events, event_id, config)`
+def extract_epochs(raw, events, event_id, config):
+    """Compatibility wrapper that creates MNE Epochs and returns labels.
+
+    Kept to match the original API used in `main_offline.py` so the main can
+    remain minimal (two simple lines). Internally calls `create_epochs`.
+
+    Parameters:
+    - raw: mne.io.BaseRaw
+    - events: original events array (not used directly here but kept for API compatibility)
+    - event_id: mapping of marker names to ids (used to build markers list)
+    - config: configuration dict
+
+    Returns:
+    - epochs: mne.Epochs
+    - labels: np.ndarray of labels per epoch
+    """
+    # Build markers list from event_id if provided
+    markers = list(event_id.keys()) if event_id is not None else None
+
+    epochs, _ = create_epochs(
+        raw=raw,
+        markers=markers,
+        tmin=config.get("epoch_tmin", 0.3),
+        tmax=config.get("epoch_tmax", 3.0),
+        motor_channels=config.get("motor_channels", None),
+    )
+
+    labels = epochs.events[:, -1].copy() if len(epochs) > 0 else np.array([], dtype=int)
+    return epochs, labels
+
+
+#change: high-level helper to apply AutoReject (fit on train) and convert epochs -> windows
+def autoreject_and_window(
+    epochs: mne.Epochs,
+    labels: np.ndarray,
+    sessions_id,
+    config: Dict,
+    ar: Optional[object] = None,
+    fit_ar: bool = False,
+) -> Tuple[mne.Epochs, np.ndarray, np.ndarray, np.ndarray, object]:
+    """Fit/apply AutoReject and extract overlapping windows.
+
+    Parameters
+    ----------
+    epochs : mne.Epochs
+    labels : np.ndarray
+    sessions_id : any
+        Per-epoch metadata (list/array) aligned with `epochs` length.
+    config : dict
+        Must contain 'window_size' and 'step_size' (samples)
+    ar : ArtefactRemoval or None
+        Pre-fitted ArtefactRemoval object to apply (used when fit_ar=False)
+    fit_ar : bool
+        If True, fit a new ArtefactRemoval on `epochs` and return it.
+
+    Returns
+    -------
+    cleaned_epochs : mne.Epochs
+    X_windows : np.ndarray (n_windows, n_channels, window_size)
+    y_windows : np.ndarray (n_windows,)
+    sessions_per_window : np.ndarray (n_windows,) or empty
+    ar_obj : ArtefactRemoval
+
+    Notes
+    -----
+    - Uses `bci.preprocessing.windows.epochs_to_windows` for window extraction.
+    - Keeps `epochs` as MNE objects for downstream use.
+    """
+    import numpy as _np
+    from bci.preprocessing.windows import epochs_to_windows as _epochs_to_windows
+    from bci.preprocessing.artefact_removal import ArtefactRemoval as _ArtefactRemoval
+
+    epoch_data = epochs.get_data()  # (n_epochs, n_channels, n_times)
+
+    # Fit or use provided AutoReject wrapper
+    if fit_ar:
+        ar_obj = _ArtefactRemoval()
+        # ArtefactRemoval expects numpy epoch arrays when computing thresholds
+        ar_obj.get_rejection_thresholds(epoch_data, config)
+    else:
+        if ar is None:
+            raise ValueError("When fit_ar=False a pre-fitted `ar` must be provided")
+        ar_obj = ar
+
+    if getattr(ar_obj, "rejection_threshold", None) is None:
+        raise ValueError("AutoReject thresholds not available on ar object")
+
+    thr = ar_obj.rejection_threshold
+
+    # Compute mask of good epochs (True = keep)
+    keep_mask = _np.array([not _np.any(_np.abs(ep) > thr) for ep in epoch_data])
+    kept_idx = _np.nonzero(keep_mask)[0]
+
+    # Build cleaned MNE Epochs
+    if kept_idx.size == 0:
+        # No epochs left after rejection
+        cleaned_epochs = mne.EpochsArray(_np.zeros((0, epoch_data.shape[1], int(config.get("window_size", 250)))), info=epochs.info)
+        cleaned_labels = _np.array([], dtype=int)
+    else:
+        cleaned_array = epoch_data[kept_idx]
+        cleaned_labels = _np.asarray(labels)[kept_idx]
+        cleaned_events = epochs.events[kept_idx]
+        cleaned_epochs = mne.EpochsArray(cleaned_array, info=epochs.info, events=cleaned_events, tmin=epochs.tmin)
+
+    # Update sessions_id to kept epochs if possible
+    try:
+        sessions_kept = _np.asarray(sessions_id)[kept_idx]
+    except Exception:
+        sessions_kept = sessions_id
+        print("#change: Warning - couldn't auto-update sessions_id after AutoReject. Please verify manually.")
+
+    # Window extraction
+    window_size = int(config.get("window_size", 250))
+    step_size = int(config.get("step_size", 32))
+    X_windows, y_windows = _epochs_to_windows(cleaned_epochs, window_size=window_size, step_size=step_size)
+
+    # Expand per-window session ids
+    trial_ids = []
+    for i in range(len(cleaned_epochs)):
+        n_channels, n_samples = cleaned_epochs.get_data()[i].shape
+        nw = 0
+        if n_samples >= window_size:
+            nw = int((n_samples - window_size) / step_size) + 1
+        trial_ids.extend([i] * nw)
+    trial_ids = _np.array(trial_ids, dtype=int)
+
+    try:
+        sessions_per_window = _np.asarray(sessions_kept)[trial_ids]
+    except Exception:
+        sessions_per_window = _np.array([], dtype=int)
+        if len(trial_ids) > 0:
+            print("#change: Warning - couldn't expand sessions_id to per-window mapping. Please verify manually.")
+
+    return cleaned_epochs, X_windows, y_windows, sessions_per_window, ar_obj
 
 
 # ============================================================================
@@ -627,107 +775,12 @@ def process_offline(
 # WINDOW EXTRACTION (Overlapping Windows from Epochs)
 # ============================================================================
 
-def extract_overlapping_windows(
-    eeg: np.ndarray,
-    window_size: int = 250,
-    step_size: int = 16
-) -> np.ndarray:
-    """
-    Extract overlapping time windows from a single epoch/trial.
-    
-    Parameters:
-    -----------
-    eeg : np.ndarray
-        Shape (n_channels, n_samples) - single epoch/trial
-    window_size : int
-        Window length in samples (e.g., 250 = 1.0s at 250 Hz)
-    step_size : int
-        Hop size in samples (e.g., 16 samples = 0.064s at 250 Hz)
-    
-    Returns:
-    --------
-    windows : np.ndarray
-        Shape (nwindows, n_channels, window_size) - extracted windows
-    
-    Example:
-    --------
-    # From daria.py workflow:
-    # After epoching, extract overlapping windows from each epoch
-    for epoch in epochs:
-        windows = extract_overlapping_windows(epoch.get_data()[0], window_size=160, step_size=32)
-    """
-    n_channels, n_samples = eeg.shape
-    
-    window_length_samples = int(window_size)
-    window_shift_samples = int(step_size)
-    
-    nwindows = int((n_samples - window_length_samples) / window_shift_samples) + 1
-    
-    window_starts = np.arange(
-        0, n_samples - window_length_samples + 1, window_shift_samples
-    ).astype(int)
-    window_ends = window_starts + window_length_samples
-    
-    windows = np.zeros((nwindows, n_channels, window_length_samples))
-    
-    for window_id in range(nwindows):
-        start = window_starts[window_id]
-        end = window_ends[window_id]
-        window = eeg[:, start:end]
-        windows[window_id, :, :] = window
-    
-    return windows
-
-
-def extract_windows_from_epochs(
-    epochs: mne.Epochs,
-    window_size: int = 250,
-    step_size: int = 16
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Extract overlapping windows from all epochs and return windows with labels and trial IDs.
-    
-    Parameters:
-    -----------
-    epochs : mne.Epochs
-        Epochs object (already processed/cleaned)
-    window_size : int
-        Window length in samples
-    step_size : int
-        Hop size in samples
-    
-    Returns:
-    --------
-    windowed_trials : np.ndarray
-        Shape (n_total_windows, n_channels, window_size) - all extracted windows
-    windowed_labels : np.ndarray
-        Shape (n_total_windows,) - labels for each window
-    trial_ids : np.ndarray
-        Shape (n_total_windows,) - trial/epoch ID for each window (for grouped splits)
-    
-    Example:
-    --------
-    epochs, ar, asr = process_offline(raw, markers, config)
-    windows, labels, trial_ids = extract_windows_from_epochs(epochs, window_size=160, step_size=32)
-    """
-    windowed_trials = []
-    windowed_labels = []
-    trial_ids = []
-    
-    data = epochs.get_data()  # (n_epochs, n_channels, n_samples)
-    labels = epochs.events[:, -1]  # (n_epochs,)
-    
-    for i, epoch_data in enumerate(data):
-        windows = extract_overlapping_windows(epoch_data, window_size=window_size, step_size=step_size)
-        windowed_trials.append(windows)
-        windowed_labels.extend([labels[i]] * windows.shape[0])
-        trial_ids.extend([i] * windows.shape[0])
-    
-    windowed_trials = np.concatenate(windowed_trials, axis=0)
-    windowed_labels = np.array(windowed_labels)
-    trial_ids = np.array(trial_ids)
-    
-    return windowed_trials, windowed_labels, trial_ids
+#`bci.preprocessing.windows 
+# Re-export commonly used helpers to preserve backward compatibility.
+from bci.preprocessing.windows import (
+    extract_overlapping_windows,
+    epochs_to_windows,
+)
 
 
 # ============================================================================

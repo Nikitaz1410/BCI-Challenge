@@ -137,3 +137,4 @@ def load_config(config_path: Union[str, Path] = "config.yaml") -> BCIConfig:
     except TypeError as e:
         # This catches missing arguments in the AppConfig constructor
         raise TypeError(f"Configuration schema mismatch: {e}")
+
