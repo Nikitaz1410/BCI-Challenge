@@ -15,8 +15,9 @@ from sklearn.metrics import (
 
 from bci.loading.bci_config import load_config
 from bci.loading.data_acquisition import load_data, extract_baseline
+from bci.Loading.loading  import load_physionet_data, load_target_subject_data
 from bci.preprocessing.filtering import Filter
-from bci.preprocessing.epoching import extract_epochs
+from bci.preprocessing.epoching import extract_epochs  # f string error while loading
 from bci.preprocessing.artefact_removal import ArtefactRemoval
 from bci.models.riemann import (
     RiemannianClf,
@@ -32,9 +33,38 @@ from bci.evaluation.metrics import compute_ece, MetricsTable, compute_itr
 
 # TODO: Import Data
 # Daria START
-x_raw_train, y_train, sessions_id_train = load_data("train")
-#   -> This function should load all available EEGBCI data 
-x_raw_test, y_test, sessions_id_test = load_data("test")
+# NOTE: For Physionet, each output raw = 1 session (for 1 subject) with 3 concatenated runs
+# For target subject (Fina), each xdf file is processed as 1 raw = 1 session
+# We assign subject IDs to raws.  
+root_path = str(Path(__file__).resolve().parents[2])  # BCI-Challange directory
+source_path = str(Path(__file__).resolve().parents[2] / "data" / "eeg" / "sub-P999" / "eeg" ) # sub-P999 recordings 
+
+# We need to save and load the data from disk to avoid memory issues
+x_raw_train, events_train, event_id_train, sub_ids_train = load_physionet_data(
+                                            subjects=list(range(1, 110)), 
+                                            root=root_path)
+
+# How the data looks:
+# print(f"first 2 elements of x_raw_train: {x_raw_train[0:2]}")
+# print(f"element of events_train: {events_train[0]}") # list of arrays of events for each subject
+# print(f"event_id_train: {event_id_train}")
+# print("first 2 subject IDs:", sub_ids_train[0:2])
+# print("\n")
+
+x_raw_test, events_test, event_id_test, sub_ids_test = load_target_subject_data(
+                                            root=str(Path(__file__).resolve().parents[2]), 
+                                            source_folder=source_path, 
+                                            task_type="all", 
+                                            limit=None
+)
+
+# How the data looks:
+# print(f"total {len(x_raw_test)} elements in x_raw_test, first 2 elements of x_raw_test: {x_raw_test[0:2]}")
+# print(f"total {len(events_test)} elements in events_test, element of events_test: {events_test[0]}") # list of arrays of events for each subject
+# print(f"event_id_test: {event_id_test}")
+# print("first 2 subject IDs:", sub_ids_test[0:2], "total", len(sub_ids_test), "subjects")
+# print("\n")
+
 #   -> This function should load all usable Finas EEG data
 # Daria END
 
