@@ -5,23 +5,21 @@
 # Apply Riemannian geometry-based classification on the covariance matrices
 # Output the classification results in real-time
 
+import pickle
 import sys
 import time
-import pickle
-import numpy as np
 from pathlib import Path
 
+import numpy as np
 from pylsl import StreamInlet, resolve_streams
 
 from bci.Loading.bci_config import load_config
 from bci.Preprocessing.filters import Filter
-from bci.Preprocessing.artefact_removal import ArtefactRemoval
 from bci.Utils.utils import choose_model
 
 if __name__ == "__main__":
-    # Init the Objects
+    # Initialize the Objects
 
-    # TODO: Load configuration
     # Load the config file
     current_wd = Path.cwd()  # BCI-Challenge directory
 
@@ -37,9 +35,9 @@ if __name__ == "__main__":
     # Initialize variables
     np.random.seed(config.random_state)
 
-    model_path = Path.cwd() / "resources" / "models" / "model.pkl"
+    model_path = current_wd / "resources" / "models" / "model.pkl"
     artefact_rejection_path = (
-        Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
+        current_wd / "resources" / "models" / "artefact_removal.pkl"
     )
 
     filter = Filter(config, online=True)
@@ -58,7 +56,6 @@ if __name__ == "__main__":
 
     total_fails = 0
     total_successes = 0
-    total_trials = 0
 
     total_predictions = 0
     total_rejected = 0
@@ -74,61 +71,70 @@ if __name__ == "__main__":
 
     print("Initializing preprocessing and model objects completed!")
 
-    # TODO: Find the EEG stream from LSL and establish connection
-    print("Looking for an EEG and Markers streams...")
+    # Find the EEG stream from LSL and establish connection
+    print("Looking for EEG and Markers streams...")
     streams = resolve_streams(wait_time=5.0)
 
     eeg_streams = [s for s in streams if s.type() == "EEG"]
     label_streams = [s for s in streams if s.type() == "Markers"]
 
-    # How does this affect?
+    if not eeg_streams or not label_streams:
+        print("❌ Could not find EEG or Markers streams.")
+        sys.exit(1)
+
     inlet = StreamInlet(eeg_streams[0], max_chunklen=32)
     inlet_labels = StreamInlet(label_streams[0], max_chunklen=32)
 
     print("Starting to read data from the EEG stream...")
 
     while True:
-        # TODO: Check the frequency at which the data is pulled
         try:
             start_classification_time = time.time() * 1000  # in milliseconds
             sample, timestamp = inlet.pull_chunk()
             labels, label_timestamp = inlet_labels.pull_chunk()
             crt_label = None
-            if len(sample) == 0 or len(labels) == 0:
+
+            # Check if sample and labels are valid and non-empty
+            if not sample or not labels:
                 continue
-            # Update the buffer with new samples
-            else:
-                sample = np.array(sample).T  # shape (n_channels, n_samples)
-                labels = np.array(labels).T  # shape (1, n_samples)
-                n_new_samples = sample.shape[1]
-                n_new_labels = labels.shape[1]
 
-                # Shift the buffer to the left
-                buffer = np.roll(buffer, -n_new_samples, axis=1)
-                label_buffer = np.roll(label_buffer, -n_new_samples, axis=1)
+            # Convert to numpy arrays and transpose to (n_channels, n_samples)
+            sample = np.array(sample).T  # shape (n_channels, n_samples)
+            labels = np.array(labels).T  # shape (1, n_samples)
+            n_new_samples = sample.shape[1]
+            n_new_labels = labels.shape[1]
 
-                # Add new samples to the end of the buffer
-                buffer[:, -n_new_samples:] = sample
-                label_buffer[:, -n_new_labels:] = labels
+            # Shift the buffer to the left
+            buffer = np.roll(buffer, -n_new_samples, axis=1)
+            label_buffer = np.roll(label_buffer, -n_new_labels, axis=1)
 
-                # Extract the current label (most present in the buffer)
-                unique, counts = np.unique(label_buffer, return_counts=True)
+            # Add new samples to the end of the buffer
+            buffer[:, -n_new_samples:] = sample
+            label_buffer[:, -n_new_labels:] = labels
+
+            # Extract the current label (most present in the buffer)
+            unique, counts = np.unique(label_buffer, return_counts=True)
+            if len(unique) > 0:
                 label_counts = dict(zip(unique, counts))
-                crt_label = max(label_counts, key=label_counts.get)
+                crt_label = max(label_counts, key=lambda k: label_counts[k])
                 print(
                     f"Current label: {crt_label} - {markers.get(crt_label, 'unknown')}"
                 )
+            else:
+                crt_label = 0  # fallback to unknown
 
-            # TODO: Filter the data
+            # Filter the data
             filtered_data = filter.apply_filter_online(buffer)
 
-            # TODO: Artifact Rejection: Check if it is an artifact => Skipped for now because it rejects only
+            # Artifact Rejection: Skipped for now
 
-            # TODO: Create the features and classify
+            # Create the features and classify
             probability = clf.predict_proba(filtered_data)
 
             if probability is None:
-                pass  # error in prediction
+                print("Warning: Model returned None for probability.")
+                continue  # skip this iteration
+
             prediction = np.argmax(probability, axis=1)[0]
             print(
                 f"Predicted class: {prediction} - {markers.get(prediction, 'unknown')} with probability {probability[0][prediction]:.4f}"
@@ -140,7 +146,7 @@ if __name__ == "__main__":
                 total_successes += int(prediction == crt_label)
                 total_fails += int(prediction != crt_label)
 
-            # TODO: Integrate the transfer function
+            number_of_classifications += 1
 
             end_classification_time = time.time() * 1000  # in milliseconds
             avg_time_per_classification += (
@@ -148,9 +154,8 @@ if __name__ == "__main__":
             )
         except KeyboardInterrupt:
             print("Stopping the online processing.")
-            # Add the current evaluations?
             print(
-                f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications)} ms"
+                f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications):.2f} ms"
             )
             print(
                 f"Total Predictions: {total_predictions}, Rejected: {total_rejected},  Successes: {total_successes}, Fails: {total_fails}"
