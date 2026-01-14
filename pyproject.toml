@@ -3,16 +3,23 @@ name = "BCI-Challenge"
 version = "0.1.0"
 description = "BCI Project for Practical Course Wise 2025/2026"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12, <3.13"
 dependencies = [
     "autoreject>=0.4.3",
+    "lightgbm>=4.6.0",
+    "lightning>=2.6.0",
     "matplotlib>=3.10.8",
     "mne>=1.11.0",
+    "moabb>=1.4.3",
+    "pandas>=2.3.3",
+    "pygame>=2.6.1",
     "pylsl>=1.17.6",
     "pyriemann>=0.9",
+    "pyxdf>=1.17.2",
     "pyyaml>=6.0.3",
     "scikit-learn>=1.8.0",
     "scipy>=1.16.3",
+    "torch>=2.9.1",
 ]
 
 [build-system]

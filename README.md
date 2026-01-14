@@ -20,19 +20,22 @@ To get started with the project, follow these steps:
    ```
 
 ## 🎯 Running the Project
-To run the riemann example offline application, use the following command:
-   ```bash
-    uv run src/bci/example_riemann_offline.py
-   ```
-   This will execute the example script located in the `src/bci` directory, demonstrating the offline processing of BCI data using Riemannian geometry methods.
-  
-To stream data in a simulated online manner, first start the replay server:
-   ```bash
-    uv run src/bci/replay.py
-   ```
 
-In another terminal, run the online processing script:
-   ```bash
-    uv run src/bci/example_riemann_online.py
-   ```
-   This will execute the online example script, which processes data in real-time as it is streamed
+**Offline**
+
+1. First, make sure to adapt the config file located at `src/bci/config/config.yaml` to your needs.
+2. Run the offline acquisition script from the project root: `<run> src/bci/main_offline.py`
+*Note*: It might take longer at the beginning until all Physionet data is downloaded.
+
+**Online - No Dino Game**
+
+1. First, make sure to adapt the config file located at `src/bci/config/config.yaml` to your needs.
+2. You need a trained model and a AR threshold to run the online acquisition. You can train a model using the offline acquisition first.
+3. First you need a stream of data. Run the replay script from the project root: `<run> src/bci/replay.py`. This will send data to a LSL stream from the test file selected in the config file.
+4. Run the online acquisition script from the project root: `<run> src/bci/main_online.py`
+*Note*: You can close the online acquisition at any time using Ctrl + C. (Intermediary results will be saved.)
+
+**Online - Dino Game**
+1. First, make sure to adapt the config file located at `src/bci/config/config.yaml` to have online_mode set to "dino".
+2-4. Same as the "Online - No Dino Game" instructions above.
+5. Run the dino game script from the project root: `<run> src/bci/dino_game.py`
