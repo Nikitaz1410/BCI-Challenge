@@ -55,8 +55,12 @@ class RiemannianClf:
         Returns:
         np.ndarray: Predicted class probabilities
         """
-        cov = self._extract_features(cov)
-        return self.clf.predict_proba(cov)
+        try:
+            cov = self._extract_features(cov)
+            return self.clf.predict_proba(cov[np.newaxis, ...])
+        except ValueError as e:
+            print(f"Error in feature extraction: {e}")
+            return None
 
     def _update_centroids(self):
         """

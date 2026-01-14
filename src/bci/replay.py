@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 from pylsl import StreamInfo, StreamOutlet
 
-from bci.loading.bci_config import load_config
-from bci.loading.data_acquisition import load_data
+from bci.Loading.bci_config import load_config
+from bci.Loading.loading import load_physionet_data, load_target_subject_data
 
 
 def replay_data_as_lsl(
@@ -73,9 +73,11 @@ def replay_data_as_lsl(
 # Example usage:
 
 if __name__ == "__main__":
-    # TODO: Load configuration
+    # Load the config file
+    current_wd = Path.cwd()  # BCI-Challenge directory
+
     try:
-        config_path = Path.cwd() / "resources" / "configs" / "bci_config.yaml"
+        config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
         print(f"Loading configuration from: {config_path}")
         config = load_config(config_path)
         print("Configuration loaded successfully!")
@@ -83,16 +85,49 @@ if __name__ == "__main__":
         print(f"❌ Error loading config: {e}")
         sys.exit(1)
 
-    # Load data file and prepare data
-    test_subject_id = 42
-    raw_data, events, event_id = load_data(subject=test_subject_id, config=config)
-    eeg_data = raw_data.get_data()  # shape (n_channels, n_samples)
+    if "Phy" in config.replay_subject_id:
+        s_id = int(config.replay_subject_id.split("-")[1])
+        # Load training data
+        raw, events, event_id, sub_ids = load_physionet_data(
+            subjects=[s_id], root=current_wd, config=config
+        )
+        print(f"Loaded subject {s_id} from Physionet for training.")
+    else:
+        # Load target subject data for testing
+        test_data_path = (
+            current_wd / "data" / config.replay_subject_id
+        )  # Path can be defined in config file
+        raw, events, event_id, sub_ids = load_target_subject_data(
+            root=current_wd,
+            source_path=test_data_path,
+            config=config,
+            task_type="arrow",
+            limit=0,
+        )
+        print(f"Loaded {len(raw)} target subject sessions for testing.")
+
+    # Extract EEG data and labels
+    # TODO: Handle multiple sessions if needed -> For now only one is considered
+    eeg_data = raw[0].get_data()  # shape (n_channels, n_samples)
+
+    # TODO: Check if this is really correct
     labels = np.zeros(eeg_data.shape[1], dtype=int)
 
-    for event in events:
-        labels[event[0]] = event[2]
+    # Assign labels based on events
+    for event in events[0]:
+        sample_idx = event[0]
+        label = event[2]
+        labels[sample_idx] = label
 
-    print(f"EEG Data shape: {eeg_data.shape}, Labels shape: {labels.shape}")
+    # Populate labels for intervals between events
+    for i in range(len(events[0]) - 1):
+        start_sample = events[0][i][0]
+        end_sample = events[0][i + 1][0]
+        label = events[0][i][2]
+        labels[start_sample:end_sample] = label
+
+    print(labels)
+    print(f"EEG data shape: {eeg_data.shape}, Labels shape: {labels.shape}")
 
     # Replay the data and labels as LSL streams
     replay_data_as_lsl(eeg_data, labels, config.fs, chunk_size=32)

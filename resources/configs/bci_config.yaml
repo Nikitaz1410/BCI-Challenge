@@ -42,3 +42,7 @@ n_folds: 3
 split: 0.8 # (Train-Test split)
 random_state: 42
 test: "sub-P999" # Options: sub-P999
+
+# Online
+online: "dino" # Options: dino (Needs an active eeg stream), prerecorded (for testing)
+replay_subject_id: "Phy-42" # Options: Phy-### (for Physionet data), sub-P### (for our data)

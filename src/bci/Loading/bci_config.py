@@ -26,6 +26,10 @@ class EEGConfig:
     random_state: int
     test: str
 
+    # Online Mode
+    online: str
+    replay_subject_id: str
+
     # Optional with default
     remove_channels: Optional[List[str]] = field(default_factory=list)
 
