@@ -1,194 +1,327 @@
-import sys
 import pickle
+import sys
 import time
-
-import numpy as np
-
 from pathlib import Path
-from sklearn.metrics import (
-    balanced_accuracy_score,
-    accuracy_score,
-    f1_score,
-    brier_score_loss,
-)
 
+import mne
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import GroupKFold
 
-from bci.loading.bci_config import load_config
-from bci.loading.data_acquisition import load_data, extract_baseline
+# Evaluation
+from bci.Evaluation.metrics import MetricsTable, compile_metrics
 
-# Data-loading helpers (physionet + target subject loader)
+# Utils
+from bci.Loading.bci_config import load_config
+
+# Data Acquisition
 from bci.Loading.loading import load_physionet_data, load_target_subject_data
+from bci.Preprocessing.artefact_removal import ArtefactRemoval
 
-# Epoch extraction (preprocessing helper)
-from bci.preprocessing.preprocessing import extract_epochs
-
-# Optional: filtering helper and CV helpers
-from bci.preprocessing.filtering import Filter
-from bci.Training.cv import grouped_kfold_indices
-from bci.preprocessing.filtering import Filter
-from bci.preprocessing.epoching import extract_epochs
-from bci.preprocessing.artefact_removal import ArtefactRemoval
-from bci.models.riemann import (
-    RiemannianClf,
-    recentering,
-    compute_covariances,
+# Preprocessing
+from bci.Preprocessing.filters import (
+    Filter,
 )
-from bci.evaluation.metrics import compute_ece, MetricsTable, compute_itr
+from bci.Preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
+from bci.Utils.utils import (
+    choose_model,
+)  # Constructs the model of your choosing (can be easily extended)
 
+if __name__ == "__main__":
+    # Load the config file
+    current_wd = Path.cwd()  # BCI-Challenge directory
 
-from bci.preprocessing.filters import (
-    filter_dataset_pair,
-    create_filter_from_config,
-)
-from bci.Training.trainer import run_cross_validation
+    try:
+        config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
+        print(f"Loading configuration from: {config_path}")
+        config = load_config(config_path)
+        print("Configuration loaded successfully!")
+    except Exception as e:
+        print(f"❌ Error loading config: {e}")
+        sys.exit(1)
 
-# =============================================================================
-# Main
-# =============================================================================
+    # Initialize variables
+    np.random.seed(config.random_state)
+    metrics_table = MetricsTable()
+    model_args = {
+        "cov_est": "lwf"
+    }  # args for the model chooser (what the model constructor needs)
+    gkf = None
+    if config.n_folds < 2:
+        print("No cross-validation will be performed.")
+    else:
+        gkf = GroupKFold(n_splits=config.n_folds)  # Cross-Validation splitter
 
+    filter = Filter(config, online=False)
 
-# TODO: Import Data
-# Daria START
-# NOTE: For Physionet, each output raw = 1 session (for 1 subject) with 3 concatenated runs
-# For target subject (Fina), each xdf file is processed as 1 raw = 1 session
-# We assign subject IDs to raws.  
-root_path = str(Path(__file__).resolve().parents[2])  # BCI-Challange directory
-source_path = str(Path(__file__).resolve().parents[2] / "data" / "eeg" / "sub-P999" / "eeg" ) # sub-P999 recordings 
+    test_data_path = (
+        current_wd / "data" / config.test
+    )  # Path can be defined in config file
 
-# We need to save and load the data from disk to avoid memory issues
-x_raw_train, events_train, event_id_train, sub_ids_train = load_physionet_data(
-                                            subjects=list(range(1, 110)), 
-                                            root=root_path)
+    use_test = True  # Whether to test on target subject data after CV
+    timings = {}
 
-# How the data looks:
-# print(f"first 2 elements of x_raw_train: {x_raw_train[0:2]}")
-# print(f"element of events_train: {events_train[0]}") # list of arrays of events for each subject
-# print(f"event_id_train: {event_id_train}")
-# print("first 2 subject IDs:", sub_ids_train[0:2])
-# print("\n")
+    # Load training data
+    x_raw_train, events_train, event_id_train, sub_ids_train = load_physionet_data(
+        subjects=config.subjects, root=current_wd, config=config
+    )
+    print(f"Loaded {len(x_raw_train)} subjects from Physionet for training.")
 
-x_raw_test, events_test, event_id_test, sub_ids_test = load_target_subject_data(
-                                            root=str(Path(__file__).resolve().parents[2]), 
-                                            source_folder=source_path, 
-                                            task_type="all", 
-                                            limit=None
-)
+    # Load target subject data for testing
+    x_raw_test, events_test, event_id_test, sub_ids_test = load_target_subject_data(
+        root=current_wd,
+        source_path=test_data_path,
+        config=config,
+        task_type="arrow",
+        limit=0,
+    )
+    print(f"Loaded {len(x_raw_test)} target subject sessions for testing.")
 
-# How the data looks:
-# print(f"total {len(x_raw_test)} elements in x_raw_test, first 2 elements of x_raw_test: {x_raw_test[0:2]}")
-# print(f"total {len(events_test)} elements in events_test, element of events_test: {events_test[0]}") # list of arrays of events for each subject
-# print(f"event_id_test: {event_id_test}")
-# print("first 2 subject IDs:", sub_ids_test[0:2], "total", len(sub_ids_test), "subjects")
-# print("\n")
+    # Training: Filter the data and create epochs with metadata for grouped CV
+    all_epochs_list = []
+    for raw, events, sub_id in zip(x_raw_train, events_train, sub_ids_train):
+        # Filter the data
+        filtered_raw = filter.apply_filter_offline(raw)
 
-#   -> This function should load all usable Finas EEG data
-# Daria END
+        # Create the epochs for CV with metadata
+        epochs = mne.Epochs(
+            filtered_raw,
+            events,
+            event_id=event_id_train,
+            tmin=0.5,
+            tmax=4.0,
+            preload=True,
+            baseline=None,
+        )
 
-# Amal START
-config = load_config()
-filt = create_filter_from_config(config, online=False)
-# TODO: Filter the Data (No Notch for now)
+        # Attach metadata
+        metadata = pd.DataFrame(
+            {
+                "subject_id": [sub_id] * len(epochs),
+                "condition": epochs.events[:, 2],
+            }
+        )
+        epochs.metadata = metadata
 
-#change: perform offline filtering for train and test using the preprocessing helper
-x_filtered_train, x_filtered_test, filter_latency_ms = filter_dataset_pair(
-    x_raw_train, x_raw_test, config
-)
+        all_epochs_list.append(epochs)
 
-# TODO: Epoch the Data
-# ATTENTION: DATA LEAKAGE HERE!!! Overlapping windows which are later split in train and val
+    # Prepare Epochs with Metadata for Grouped CV
+    combined_epochs = mne.concatenate_epochs(all_epochs_list)
+    X_train = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
+    y_train = combined_epochs.events[:, 2]  # The labels (e.g., 1, 2, 3)
+    groups = (
+        combined_epochs.metadata["subject_id"].values
+        if combined_epochs.metadata is not None
+        else None
+    )
 
-train_epochs, train_labels = extract_epochs(
-    raw=x_filtered_train, events=y_train, event_id=sessions_id_train, config=config
-)
-test_epochs, test_labels = extract_epochs(
-    raw=x_filtered_test, events=y_test, event_id=sessions_id_test, config=config
-)
+    # Grouped K-Fold Cross-Validation
+    if config.n_folds >= 2 and gkf is not None and groups is not None:
+        cv_metrics_list = []  # To compute the mean metrics over folds
+        for fold_idx, (train_idx, val_idx) in enumerate(
+            gkf.split(X_train, y_train, groups=groups)
+        ):
+            # Epoch the data into windows
+            fold_windowed_epochs = epochs_windows_from_fold(
+                combined_epochs,
+                train_idx,
+                val_idx,
+                window_size=config.window_size,
+                step_size=config.step_size,
+            )
 
-# Begin Cross Validation just on the training data and test on finas test data only in the end 
+            X_train_fold, y_train_fold = (
+                fold_windowed_epochs["X_train"],
+                fold_windowed_epochs["y_train"],
+            )
+            X_val_fold, y_val_fold = (
+                fold_windowed_epochs["X_val"],
+                fold_windowed_epochs["y_val"],
+            )
 
-#change: run grouped CV and training in trainer.run_cross_validation to keep main minimal
-cv_out = run_cross_validation(
-    train_epochs,
-    train_labels,
-    sessions_id_train,
-    config,
-    n_splits=int(config.get("n_splits", 5)),
-)
+            # Remove artifacts within each fold
+            ar = ArtefactRemoval()
+            ar.get_rejection_thresholds(X_train_fold, config)
 
-# Original TODO block (kept for traceability):
-# 1. Split the training data into k folds
-# 2. For each fold, train the model on the training data and test on the validation data
-# 3. Compute the metrics for each fold
-# 4. Compute the average metrics across all folds
-# 5. Compute the final metrics on the test data
-# 6. Print the metrics
-# 7. Save the model
+            X_train_clean, y_train_clean = ar.reject_bad_epochs(
+                X_train_fold, y_train_fold
+            )
+            X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
 
+            # Train and evaluate the model within each fold
+            clf = choose_model(config.model, model_args)
+            clf.fit(X_train_clean, y_train_clean)
 
-# (optional) Normalize the data
-#train_epochs = recentering(train_epochs)
-#test_epochs = recentering(test_epochs)
+            # Evaluate on validation fold
+            fold_predictions = clf.predict(X_val_clean)
+            fold_probabilities = clf.predict_proba(X_val_clean)
 
-# TODO: Remove Artifacts
-#change: Delegate AutoReject + windowing to preprocessing.autoreject_and_window
-from bci.preprocessing.preprocessing import autoreject_and_window
+            # Compute metrics for this fold
+            fold_metrics = compile_metrics(
+                y_true=y_val_clean,
+                y_pred=fold_predictions,
+                y_prob=fold_probabilities,
+                timings=None,
+                n_classes=len(event_id_train),
+            )
 
-# Fit AutoReject on training epochs and extract windows
-clean_train_epochs, X_train, y_train, sessions_id_train, ar = autoreject_and_window(
-    train_epochs, train_labels, sessions_id_train, config, ar=None, fit_ar=True
-)
+            cv_metrics_list.append(fold_metrics)
+            print(f"Fold {fold_idx} Accuracy: {fold_metrics['Acc.']:.4f}")
 
-# Apply the fitted AutoReject to test epochs and extract windows
-clean_test_epochs, X_test, y_test, sessions_id_test, _ = autoreject_and_window(
-    test_epochs, test_labels, sessions_id_test, config, ar=ar, fit_ar=False
-)
+        # CV Results
+        # TODO: Discuss with team what metrics are relevant from CV. For now just the performance ones are computed
 
-# @Amal please verify that sessions_id_train and sessions_id_test align with downstream assumptions
-# Amal END
+        print("\n" + "=" * 60)
+        print("CROSS-VALIDATION RESULTS (Mean ± Std)")
+        print("=" * 60)
 
-# Nikita START
-# TODO: Extract Features
-model.fit(clean_train_epochs, clean_train_labels)
-model.predict(test_epochs)
+        cv_mean_metrics = {}
+        cv_std_metrics = {}
+        metric_keys = cv_metrics_list[0].keys()
 
-# Nikita END
+        for key in metric_keys:
+            values = [m[key] for m in cv_metrics_list]
+            if key in [
+                "Train Time (ms)",
+                "Infer. Time (ms)",
+                "Avg. Filter Latency (ms)",
+                "ITR (bits/min)",
+            ]:
+                cv_mean_metrics[key] = round(np.mean(values), 2)
+                cv_std_metrics[key] = round(np.std(values), 2)
+            else:
+                cv_mean_metrics[key] = round(np.mean(values), 4)
+                cv_std_metrics[key] = round(np.std(values), 4)
 
-#Iustin START
-# TODO: Evaluate the Model
-start_eval_time = time.time() * 1000
-predictions = clf.predict(test_covs)
-end_eval_time = time.time() * 1000
-probabilities = clf.predict_proba(test_covs)
+        # Create CV summary row
+        cv_summary = {}
+        cv_summary["Dataset"] = "CV (Training)"
+        for key in metric_keys:
+            if key in [
+                "Train Time (ms)",
+                "Infer. Time (ms)",
+                "Avg. Filter Latency (ms)",
+                "ITR (bits/min)",
+            ]:
+                cv_summary[key] = (
+                    f"{cv_mean_metrics[key]:.2f} ± {cv_std_metrics[key]:.2f}"
+                )
+            else:
+                cv_summary[key] = (
+                    f"{cv_mean_metrics[key]:.4f} ± {cv_std_metrics[key]:.4f}"
+                )
 
-# TODO: Collect and Compute Metrics -> How should I move this into one function?
-acc = round(accuracy_score(test_labels, predictions), 2)
-metrics_data["Acc."] = acc
-f1 = round(f1_score(test_labels, predictions, average="macro"), 2)
-metrics_data["F1 Score"] = f1
-b_acc = round(balanced_accuracy_score(test_labels, predictions), 2)
-metrics_data["B. Acc."] = b_acc
-ece = round(compute_ece(test_labels, probabilities, n_bins=10), 2)
-metrics_data["ECE"] = ece
-brier = round(brier_score_loss(test_labels, probabilities), 2)
-metrics_data["Brier"] = brier
-train_time = round(end_train_time - start_train_time, 2)
-metrics_data["Train Time (ms)"] = train_time
-infer_time = round((end_eval_time - start_eval_time) / len(test_labels), 2)
-metrics_data["Infer. Time (ms)"] = infer_time
-#change: use estimated offline latency from preprocessing helper (filter_dataset_pair)
-filter_latency = round(filter_latency_ms, 2)
-metrics_data["Avg. Filter Latency (ms)"] = filter_latency
+        # Add CV results to metrics table
+        metrics_table.add_rows([cv_summary])
+        metrics_table.display()
 
-itr = compute_itr(
-    n_classes=len(event_id_train),
-    accuracy=acc,
-    time_per_trial=(infer_time + filter_latency) / 1000,
-)
-metrics_data["ITR (bits/min)"] = round(itr["itr_bits_per_min"], 2)
+    # Results on Holdout
 
-# Create Offline Metrics Table
-metrics_table.add_rows([metrics_data])
-metrics_table.display()
+    # Extract the windowed epochs
+    X_train_windows, y_train_windows = epochs_to_windows(
+        combined_epochs,
+        window_size=config.window_size,
+        step_size=config.step_size,
+    )
 
-# TODO: Save the Model and other Objects
-model.save(model_path)
+    ar = ArtefactRemoval()
+    ar.get_rejection_thresholds(X_train_windows, config)
+    X_train_clean, y_train_clean = ar.reject_bad_epochs(
+        X_train_windows, y_train_windows
+    )
+
+    # Construct Final Model
+    clf = choose_model(config.model, model_args)
+
+    # Train the final model on all clean training data
+    print("\nTraining final model on all training data...")
+    start_train_time = time.time() * 1000
+    clf.fit(X_train_clean, y_train_clean)
+    end_train_time = time.time() * 1000
+
+    # Test on the holdout test set
+    if use_test:
+        # Prepare test data - Filter, Epoch and Window, Remove Artifacts
+        all_test_epochs_list = []
+        start_total_time = time.time() * 1000
+        for raw, events, sub_id in zip(x_raw_test, events_test, sub_ids_test):
+            # Filter the data
+            filtered_raw = filter.apply_filter_offline(raw)
+
+            # Create the epochs for testing
+            epochs = mne.Epochs(
+                filtered_raw,
+                events,
+                event_id=event_id_test,
+                tmin=0.5,
+                tmax=4.0,
+                preload=True,
+                baseline=None,
+            )
+
+            # TODO: Should we attach metadata?
+
+            all_test_epochs_list.append(epochs)
+
+        combined_test_epochs = mne.concatenate_epochs(all_test_epochs_list)
+        test_epochs = combined_test_epochs.get_data()
+        test_labels = combined_test_epochs.events[:, 2]
+
+        # Extract windowed epochs for testing
+        X_test_windows, y_test_windows = epochs_to_windows(
+            combined_test_epochs,
+            window_size=config.window_size,
+            step_size=config.step_size,
+        )
+
+        # Also clean test data using the same thresholds
+        X_test_clean, y_test_clean = ar.reject_bad_epochs(
+            X_test_windows, y_test_windows
+        )
+
+        # Evaluate on holdout test set
+        print("Evaluating on holdout test set...")
+        start_eval_time = time.time() * 1000
+        test_predictions = clf.predict(X_test_clean)
+        end_eval_time = time.time() * 1000
+        test_probabilities = clf.predict_proba(X_test_clean)
+
+        end_total_time = time.time() * 1000
+
+        # Compute metrics for test set
+
+        test_metrics = {}
+
+        test_metrics["Dataset"] = "Test (Holdout)"
+
+        test_metrics = compile_metrics(
+            y_true=y_test_clean,
+            y_pred=test_predictions,
+            y_prob=test_probabilities,
+            timings={
+                "train_time": end_train_time - start_train_time,
+                "infer_latency": (end_eval_time - start_eval_time)
+                / max(1, len(y_test_clean)),
+                "total_latency": (end_total_time - start_total_time)
+                / max(1, len(y_test_clean)),
+                "filter_latency": filter.get_filter_latency(),
+            },
+            n_classes=len(event_id_train),
+        )
+
+        metrics_table.add_rows([test_metrics])
+        print("\n" + "=" * 60)
+        print("FINAL RESULTS")
+        print("=" * 60)
+        metrics_table.display()
+
+    # Save the Model and other Objects
+    model_path = Path.cwd() / "resources" / "models" / "model.pkl"
+    clf.save(model_path)
+    print(f"Model saved to: {model_path}")
+
+    # Save the Artefact Removal Object
+    ar_path = Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
+    with open(ar_path, "wb") as f:
+        pickle.dump(ar, f)
+    print(f"Artefact Removal object saved to: {ar_path}")
