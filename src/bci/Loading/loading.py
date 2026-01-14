@@ -7,16 +7,16 @@ This module handles:
 
 Usage:
     from src.bci import loading
-    
+
     # Load Physionet data for subjects 1 to 5
-    physionet_raws, 
-    physionet_events, 
-    physionet_event_id, 
+    physionet_raws,
+    physionet_events,
+    physionet_event_id,
     physionet_subject_ids = loading.load_physionet_data(
         subjects=list(range(1, 6)),
         root="/path/to/root_dir"
     )
-    
+
     # Load Target Subject data (Subject 110)
     target_raws,
     target_events,
@@ -27,11 +27,12 @@ Usage:
         task_type="arrow",  # or "dino" or "all"
         limit=5  # Optional limit on number of files to load
     )
-    
+
 """
 
 from __future__ import annotations
 
+from os import PathLike
 import warnings
 import sys
 from pathlib import Path
@@ -44,6 +45,9 @@ import mne
 from mne.io import concatenate_raws
 
 import moabb
+from moabb.datasets import PhysionetMI
+
+from bci.Loading.bci_config import EEGConfig
 
 # Add the root directory to the Python path
 root_dir = str(Path(__file__).resolve().parents[3])  # BCI-Challange directory
@@ -55,15 +59,14 @@ moabb.set_log_level("info")
 warnings.filterwarnings("ignore")
 
 
-
 def _get_raw_xdf_offline(
     trial: Path, marker_durations: list[float] | None = None
 ) -> tuple[mne.io.RawArray, list, list[str]]:
     """
-    Function to load the raw data from the trial and return the raw data object, 
+    Function to load the raw data from the trial and return the raw data object,
     the markers and the channel labels.
-    Based on the implementation from https://gitlab.lrz.de/students2/baseline-bci. 
-    
+    Based on the implementation from https://gitlab.lrz.de/students2/baseline-bci.
+
     Parameters
     ----------
     trial : Path
@@ -85,8 +88,8 @@ def _get_raw_xdf_offline(
     The current implementation processes two types of recordings:
     1. Recordings with no channel information (assigns predefined channel labels)
     2. Recordings where channel information exactly matches predefined channel labels
-    
-    Number of channels should be 16, the order and naming of channels should match the list 
+
+    Number of channels should be 16, the order and naming of channels should match the list
     of channel_labels below.
     Function may need to be adapted for other recordings.
     """
@@ -94,7 +97,22 @@ def _get_raw_xdf_offline(
 
     # Define channel labels
     expected_channel_labels = [
-        "Fp1","Fp2","F3","Fz","F4","T7","C3","Cz","C4","T8","P3","Pz","P4","PO7","PO8","Oz",
+        "Fp1",
+        "Fp2",
+        "F3",
+        "Fz",
+        "F4",
+        "T7",
+        "C3",
+        "Cz",
+        "C4",
+        "T8",
+        "P3",
+        "Pz",
+        "P4",
+        "PO7",
+        "PO8",
+        "Oz",
     ]  # Manually set for g.Nautilus, standard 10-20 montage
 
     # Load the data
@@ -133,21 +151,20 @@ def _get_raw_xdf_offline(
     # print(streams[eeg_channel]["info"])
 
     # Validate channel information:
-    if streams[eeg_channel]["info"]["desc"] != [None]:  
+    if streams[eeg_channel]["info"]["desc"] != [None]:
         print("Channel info found in the recording.")
         # Channel info is available - check if it matches expected labels
         channel_dict = streams[eeg_channel]["info"]["desc"][0]["channels"][0]["channel"]
         eeg_channels = [channel["label"][0] for channel in channel_dict]
-        
+
         # Check if channels match expected labels
         if eeg_channels != expected_channel_labels:
             # Channel info exists but doesn't match - filter out this recording
             return None, None, None
-    else:  
+    else:
         print("No channel info found in the recording.")
         # No channel info available - use predefined channel labels
         channel_labels = expected_channel_labels
-
 
     # Create montage object - this is needed for the raw data object (Layout of the electrodes)
     montage = mne.channels.make_standard_montage("standard_1020")
@@ -167,7 +184,9 @@ def _get_raw_xdf_offline(
 
     # Verify we have the correct number of channels
     if data.shape[0] != len(channel_labels):
-        print(f"Data has {data.shape[0]} channels, but expected {len(channel_labels)} channels")
+        print(
+            f"Data has {data.shape[0]} channels, but expected {len(channel_labels)} channels"
+        )
         return None, None, None
 
     # Get sampling frequency and create info object
@@ -212,11 +231,10 @@ def _get_raw_xdf_offline(
     return raw_data, markers, channel_labels
 
 
-
 def _standardize_and_map(raw, target_event_id, mode="arrow"):
     """
     Standardizes markers based on the task type (dino or arrow).
-    
+
     Args:
         raw: MNE Raw object.
         target_event_id: The final integer mapping,
@@ -229,26 +247,26 @@ def _standardize_and_map(raw, target_event_id, mode="arrow"):
 
     NOTE: For Dino, we have different events, so we need to handle them separately
         ''' Events IDs for Dino files
-        {np.str_(''): 1, np.str_('ARROW LEFT ONSET'): 2, 
-         np.str_('ARROW RIGHT ONSET'): 3, 
-         np.str_('CIRCLE ONSET'): 4, 
-         np.str_('JUMP'): 5, 
+        {np.str_(''): 1, np.str_('ARROW LEFT ONSET'): 2,
+         np.str_('ARROW RIGHT ONSET'): 3,
+         np.str_('CIRCLE ONSET'): 4,
+         np.str_('JUMP'): 5,
          np.str_('JUMP FAIL'): 6}
          '''
     """
-    
+
     # 1. Define mappings specific to each recording type
     if mode == "dino":
         rename_map = {
             "ARROW LEFT ONSET": "left_hand",
             "ARROW RIGHT ONSET": "right_hand",
-            "CIRCLE ONSET": "rest"
-        }   # For now, ignore JUMP and FAIL markers
+            "CIRCLE ONSET": "rest",
+        }  # For now, ignore JUMP and FAIL markers
     else:  # "arrow" mode
         rename_map = {
             "ARROW LEFT": "left_hand",
             "ARROW RIGHT": "right_hand",
-            "CIRCLE": "rest"
+            "CIRCLE": "rest",
         }
 
     # 2. Apply the rename to the raw object
@@ -261,13 +279,13 @@ def _standardize_and_map(raw, target_event_id, mode="arrow"):
     # Any annotation that didn't get renamed to 'left_hand' or 'right_hand' or 'rest'
     # (like "RIGHT ONSET" in general mode) will be filtered out here.
     events, _ = mne.events_from_annotations(raw, event_id=target_event_id)
-    
+
     return events
 
 
-def load_physionet_data(subjects: list[int], root: str) -> tuple:
-    '''Load Physionet Motor Imagery data for specified subjects.
-    
+def load_physionet_data(subjects: list[int], root: Path, config: EEGConfig) -> tuple:
+    """Load Physionet Motor Imagery data for specified subjects.
+
     This function checks if the data is already saved on disk. If not, it downloads
     the data from Physionet, preprocesses it (attaching subject IDs), and saves it
     to disk for future use.
@@ -287,9 +305,9 @@ def load_physionet_data(subjects: list[int], root: str) -> tuple:
         - loaded_events: List of event arrays for each subject.
         - event_id: Dictionary mapping event labels to event IDs.
         - subject_ids_out: List of subject IDs corresponding to the loaded data.
-    '''
+    """
 
-    physionet_root = Path(root) / "data" / "datasets" / "physionet"
+    physionet_root = root / "data" / "datasets" / "physionet"
     raw_dir = physionet_root / "raws"
     event_dir = physionet_root / "events"
     meta_dir = physionet_root / "metadata"
@@ -301,46 +319,32 @@ def load_physionet_data(subjects: list[int], root: str) -> tuple:
 
     # 1. DATA GENERATION / SAVING TO DISK
     if not subjects_csv.exists():
-        from moabb.datasets import PhysionetMI
         dataset = PhysionetMI(imagined=True, executed=False)
         dataset.feet_runs = []
-        
+
         remove = [88, 92, 100]
         target_subjects = [x for x in dataset.subject_list if x not in remove]
 
-        event_dict = dataset.events  
-        event_id = {'rest': event_dict['rest'], 
-                    'left_hand': event_dict['left_hand'], 
-                    'right_hand': event_dict['right_hand']}
-        
-        ''' The event id dict is:
+        event_dict = dataset.events
+        event_id = {
+            "rest": event_dict["rest"],
+            "left_hand": event_dict["left_hand"],
+            "right_hand": event_dict["right_hand"],
+        }
+
+        """ The event id dict is:
         event_id = {
             "rest": 1,
             "left_hand": 2,
             "right_hand": 3
         }
-        '''
-        
+        """
+
         # Save event_id mapping
         with open(event_id_path, "w") as f:
             json.dump(event_id, f, indent=2)
 
-        channels = ["Fp1",
-                    "Fp2",
-                    "F3",
-                    "Fz",
-                    "F4",
-                    "T7",
-                    "C3",
-                    "Cz",
-                    "C4",
-                    "T8",
-                    "P3",
-                    "Pz",
-                    "P4",
-                    "PO7",
-                    "PO8",
-                    "Oz"]   # standard 10-20 montage
+        channels = config.channels
         subject_rows = []
 
         for sub_id in target_subjects:
@@ -352,24 +356,30 @@ def load_physionet_data(subjects: list[int], root: str) -> tuple:
 
             raw_sub = mne.concatenate_raws(raw_list)
             raw_sub.pick(channels)
-            
+
             # --- ATTACH SUBJECT ID TO RAW ---
             # Use the 'subject_info' dictionary which is the standard MNE way
-            raw_sub.info['subject_info'] = {'id': sub_id}
-            
+            raw_sub.info["subject_info"] = {"id": sub_id}
+
             raw_path = raw_dir / f"subj_{sub_id:03d}_raw.fif"
             events_path = event_dir / f"subj_{sub_id:03d}_events.npy"
-            
+
             events_sub, _ = mne.events_from_annotations(raw_sub, event_id=event_id)
             np.save(events_path, events_sub)
             raw_sub.save(raw_path, overwrite=True)
             # np.save(events_path, mne.find_events(raw_sub))
-            
+
             # Record metadata to CSV
-            subject_rows.append({"subject_id": sub_id, "raw_file": raw_path.name, "events_file": events_path.name})
+            subject_rows.append(
+                {
+                    "subject_id": sub_id,
+                    "raw_file": raw_path.name,
+                    "events_file": events_path.name,
+                }
+            )
 
         pd.DataFrame(subject_rows).to_csv(subjects_csv, index=False)
-    
+
     # 2. LOAD DATA FROM DISK
     with open(event_id_path, "r") as f:
         event_id = json.load(f)
@@ -384,13 +394,13 @@ def load_physionet_data(subjects: list[int], root: str) -> tuple:
 
         r_path = raw_dir / f"subj_{sub_id:03d}_raw.fif"
         e_path = event_dir / f"subj_{sub_id:03d}_events.npy"
-        
+
         raw = mne.io.read_raw_fif(r_path, preload=True)
         evs = np.load(e_path)
-        
+
         # Ensure the ID is present in the info after loading
-        raw.info['subject_info'] = {'id': sub_id}
-        
+        raw.info["subject_info"] = {"id": sub_id}
+
         loaded_raws.append(raw)
         loaded_events.append(evs)
         subject_ids_out.append(sub_id)
@@ -398,30 +408,30 @@ def load_physionet_data(subjects: list[int], root: str) -> tuple:
     return loaded_raws, loaded_events, event_id, subject_ids_out
 
 
-
 def load_target_subject_data(
-    root: str, 
-    source_folder: str = None, 
-    task_type: str = "all", 
-    limit: int = None
+    root: Path,
+    source_path: Path,
+    config: EEGConfig,
+    task_type: str = "all",
+    limit: int = 0,
 ) -> tuple:
     """
-    Loads target data (Subject 110). 
+    Loads target data (Subject 110).
     1. Checks 'data/datasets/target' for existing .fif files.
     2. If empty, processes XDF from source_folder.
     3. Infers and saves event_id mapping.
     """
-    target_dir = Path(root) / "data" / "datasets" / "target"
+    target_dir = root / "data" / "datasets" / "target"
     raw_save_dir = target_dir / "raws"
     event_save_dir = target_dir / "events"
     event_id_path = target_dir / "event_id.json"
-    
+
     raw_save_dir.mkdir(parents=True, exist_ok=True)
     event_save_dir.mkdir(parents=True, exist_ok=True)
 
     # --- STEP 1: CHECK TARGET FOLDER ---
     existing_fif = sorted(list(raw_save_dir.glob("*.fif")))
-    
+
     # Filter by task_type if existing files are found
     if task_type == "dino":
         existing_fif = [f for f in existing_fif if "dino" in f.name.lower()]
@@ -430,8 +440,9 @@ def load_target_subject_data(
 
     if len(existing_fif) > 0:
         print(f"Found {len(existing_fif)} processed files in target folder. Loading...")
-        if limit: existing_fif = existing_fif[:limit]   # load files only up to limit
-        
+        if limit > 0:
+            existing_fif = existing_fif[:limit]  # load files only up to limit
+
         loaded_raws = []
         loaded_events = []
         for fif_p in existing_fif:
@@ -442,20 +453,21 @@ def load_target_subject_data(
             # print(evs)
             loaded_raws.append(raw)
             loaded_events.append(evs)
-        
-        with open(event_id_path, 'r') as f:
+
+        with open(event_id_path, "r") as f:
             event_id = json.load(f)
             # print(event_id)
-            
+
         return loaded_raws, loaded_events, event_id, [110] * len(loaded_raws)
 
     # --- STEP 2: IF TARGET EMPTY, CHECK SOURCE ---
-    if source_folder is None:
-        raise ValueError("Target folder is empty and no source_folder was provided to process raw XDF files.")
+    if source_path is None:
+        raise ValueError(
+            "Target folder is empty and no source_folder was provided to process raw XDF files."
+        )
 
-    source_path = Path(source_folder)
     all_xdf = sorted([p for p in source_path.glob("*.xdf")])
-    
+
     if task_type == "dino":
         selected_files = [f for f in all_xdf if "dino" in f.name.lower()]
     elif task_type == "arrow":
@@ -464,41 +476,30 @@ def load_target_subject_data(
         selected_files = all_xdf
 
     if not selected_files:
-        raise FileNotFoundError(f"No XDF files matching category '{task_type}' found in {source_folder}")
+        raise FileNotFoundError(
+            f"No XDF files matching category '{task_type}' found in {source_folder}"
+        )
 
-    if limit: selected_files = selected_files[:limit]
+    if limit:
+        selected_files = selected_files[:limit]
 
     loaded_raws, loaded_events, selected_event_id = [], [], {}
-    
-    target_event_id = {
-            "rest": 1,
-            "left_hand": 2,
-            "right_hand": 3
-            }       # Same as the Physionet event_id mapping
 
-    channels = ["Fp1",
-                "Fp2",
-                "F3",
-                "Fz",
-                "F4",
-                "T7",
-                "C3",
-                "Cz",
-                "C4",
-                "T8",
-                "P3",
-                "Pz",
-                "P4",
-                "PO7",
-                "PO8",
-                "Oz"]   # standard 10-20 montage
+    target_event_id = {
+        "rest": 1,
+        "left_hand": 2,
+        "right_hand": 3,
+    }  # Same as the Physionet event_id mapping
+
+    channels = config.channels
 
     # --- STEP 3: PROCESS XDF AND INFER EVENT_ID ---
     for file_path in selected_files:
         print(f"Processing XDF: {file_path.name}")
         raw, markers, channel_labels = _get_raw_xdf_offline(file_path)
-        
-        if raw is None: continue
+
+        if raw is None:
+            continue
 
         raw.resample(160)
         raw.pick(channels)
@@ -517,7 +518,7 @@ def load_target_subject_data(
 
         # Save files
         base_name = file_path.stem  # filename without extension
-        raw.info['subject_info'] = {'id': 110}
+        raw.info["subject_info"] = {"id": 110}
         raw.save(raw_save_dir / f"{base_name}_raw.fif", overwrite=True)
         np.save(event_save_dir / f"{base_name}_events.npy", selected_events)
 
@@ -531,13 +532,11 @@ def load_target_subject_data(
     return loaded_raws, loaded_events, selected_event_id, [110] * len(loaded_raws)
 
 
-
-
 # NOTE: The following is an example of how to use the loaded data for you guys as a reference
 # on how the data could be processed further.
 # TODO: Needs to be removed from the final version.
 
-'''
+"""
 # ==========================================
 # Small example to load data
 # ==========================================
@@ -563,9 +562,9 @@ print(sub_event_id)
 print(f"Loaded {len(sub_raws)} raws from target subject data.")
 print("Subject IDs:", sub_ids)
 
-'''
+"""
 
-'''
+"""
 # ==========================================
 # SAMPLE preprocessing: Filtering, Epoching, Metadata attachment with the function above
 # ==========================================
@@ -578,10 +577,10 @@ for raw, events, sub_id in zip(physionet_loaded_raws, physionet_loaded_events, p
 for raw, events, sub_id in zip(sub_raws, sub_events, sub_ids):
     # A. Filtering (Subject identity is safe inside the 'raw' object)
     raw.filter(7., 30., fir_design='firwin', skip_by_annotation='edge')
-    
+
     # B. Create Epochs
     epochs = mne.Epochs(raw, events, event_id=sub_event_id, tmin=-0.2, tmax=4.0, preload=True)
-    
+
     # C. ATTACH METADATA
     # We create a dataframe where each row corresponds to an epoch (trial)
     metadata = pd.DataFrame({
@@ -589,7 +588,7 @@ for raw, events, sub_id in zip(sub_raws, sub_events, sub_ids):
         'condition': epochs.events[:, 2]  # Optional: track class labels here too
     })
     epochs.metadata = metadata
-    
+
     all_epochs_list.append(epochs)
 
 # D. Concatenate all subjects into one object
@@ -605,23 +604,11 @@ groups = combined_epochs.metadata['subject_id'].values  # Subject IDs for groupi
 
 # Cross-Validation. Note: Does not work with mixed (physionet + target) data yet
 from sklearn.model_selection import GroupKFold
-gkf = GroupKFold(n_splits=5)  
+gkf = GroupKFold(n_splits=5)
 
 for train_idx, test_idx in gkf.split(X, y, groups=groups):
     X_train, X_test = X[train_idx], X[test_idx]
     y_train, y_test = y[train_idx], y[test_idx]
     print(f"Train subjects: {np.unique(groups[train_idx])}, Test subjects: {np.unique(groups[test_idx])}")
 
-'''
-
-
-
-
-
-
-
-
-
-
-
-
+"""
