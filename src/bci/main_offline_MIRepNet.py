@@ -1,14 +1,15 @@
 """
-Main offline pipeline for MIRepNet model with 5-fold cross-validation.
+Main offline pipeline for MIRepNet model.
 
-This script finetunes and evaluates the MIRepNet foundation model on target subject data.
-Uses 5-fold cross-validation: for each fold, 4 folds are used for finetuning and 1 fold for testing.
+This script finetunes and evaluates the MIRepNet foundation model.
+- Uses GroupKFold cross-validation on finetuning data
+- Finetunes on all finetuning data for final model
+- Tests on separate test data
 Make sure to set model: "mirepnet" in the config file (bci_config.yaml).
 
 The MIRepNet model:
 - Loads pretrained foundation weights
-- Finetunes on 80% of the data (4 folds)
-- Tests on the remaining 20% (1 fold)
+- Finetunes on provided training data
 - Uses Euclidean Alignment (EA) preprocessing
 - Handles channel padding/interpolation automatically
 """
@@ -26,7 +27,7 @@ if str(src_dir) not in sys.path:
 import mne
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import GroupKFold
 
 # Evaluation
 from bci.evaluation.metrics import MetricsTable, compile_metrics
@@ -39,7 +40,7 @@ from bci.preprocessing.artefact_removal import ArtefactRemoval
 from bci.preprocessing.filters import (
     Filter,
 )
-from bci.preprocessing.windows import epochs_to_windows
+from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
 
 # Utils
 from bci.utils.bci_config import load_config
@@ -75,43 +76,73 @@ if __name__ == "__main__":
         "device": "auto",
         "actual_channels": config.channels if hasattr(config, 'channels') and config.channels else None,
     }  # args for the model chooser (what the model constructor needs)
+    gkf = None
+    if config.n_folds < 2:
+        print("No cross-validation will be performed.")
+    else:
+        gkf = GroupKFold(n_splits=config.n_folds)  # Cross-Validation splitter
 
     filter = Filter(config, online=False)
 
-    test_data_path = (
+    finetune_data_source_path = (
+        current_wd / "data" / "P999"
+    )  # Path can be defined in config file
+
+    finetune_data_target_path = (
+        current_wd / "data" / "datasets" / "P999"
+    )  # Path can be defined in config file
+
+    test_data_source_path = (
         current_wd / "data" / config.test
     )  # Path can be defined in config file
 
-    # Load target subject data (will be used for 5-fold CV)
-    x_raw_test, events_test, event_id_test, sub_ids_test = load_target_subject_data(
+    test_data_target_path = (
+        current_wd / "data" / "datasets" / config.test
+    )  # Path can be defined in config file
+
+    use_test = True  # Whether to test on target subject data after CV
+    timings = {}
+
+    # Load finetuning data
+    x_raw_finetune, events_finetune, event_id_finetune, sub_ids_finetune = load_target_subject_data(
         root=current_wd,
-        source_path=test_data_path,
+        source_path=finetune_data_source_path,
+        target_path=finetune_data_target_path,
         config=config,
-        task_type="arrow",
+        task_type="",
         limit=0,
     )
-    print(f"Loaded {len(x_raw_test)} target subject sessions.")
-    print("Note: Using 5-fold cross-validation on target subject data.")
+    print(f"Loaded {len(x_raw_finetune)} finetuning sessions.")
 
-    # Process test data: Filter, Epoch and Window
-    print("\nProcessing test data...")
-    all_test_epochs_list = []
-    for raw, events, sub_id in zip(x_raw_test, events_test, sub_ids_test):
+    # Load target subject data for testing
+    x_raw_test, events_test, event_id_test, sub_ids_test = load_target_subject_data(
+        root=current_wd,
+        source_path=test_data_source_path,
+        target_path=test_data_target_path,
+        config=config,
+        task_type="",
+        limit=0,
+    )
+    print(f"Loaded {len(x_raw_test)} target subject sessions for testing.")
+
+    # Training: Filter the data and create epochs with metadata for grouped CV
+    all_epochs_list = []
+    for raw, events, sub_id in zip(x_raw_finetune, events_finetune, sub_ids_finetune):
         # Filter the data
         filtered_raw = filter.apply_filter_offline(raw)
 
-        # Create the epochs
+        # Create the epochs for CV with metadata
         epochs = mne.Epochs(
             filtered_raw,
             events,
-            event_id=event_id_test,
+            event_id=event_id_finetune,
             tmin=0.5,
             tmax=4.0,
             preload=True,
             baseline=None,
         )
 
-        # Attach metadata for potential grouping
+        # Attach metadata
         metadata = pd.DataFrame(
             {
                 "subject_id": [sub_id] * len(epochs),
@@ -120,71 +151,194 @@ if __name__ == "__main__":
         )
         epochs.metadata = metadata
 
-        all_test_epochs_list.append(epochs)
+        all_epochs_list.append(epochs)
 
-    # Combine all test epochs
-    combined_test_epochs = mne.concatenate_epochs(all_test_epochs_list)
-    
-    # Extract windowed epochs
-    X_test_windows, y_test_windows = epochs_to_windows(
-        combined_test_epochs,
+    # Prepare Epochs with Metadata for Grouped CV
+    combined_epochs = mne.concatenate_epochs(all_epochs_list)
+    X_train = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
+    y_train = combined_epochs.events[:, 2]  # The labels (e.g., 1, 2, 3)
+    groups = (
+        combined_epochs.metadata["subject_id"].values
+        if combined_epochs.metadata is not None
+        else None
+    )
+
+    # Grouped K-Fold Cross-Validation
+    if config.n_folds >= 2 and gkf is not None and groups is not None:
+        cv_metrics_list = []  # To compute the mean metrics over folds
+        for fold_idx, (train_idx, val_idx) in enumerate(
+            gkf.split(X_train, y_train, groups=groups)
+        ):
+            # Epoch the data into windows
+            fold_windowed_epochs = epochs_windows_from_fold(
+                combined_epochs,
+                train_idx,
+                val_idx,
+                window_size=config.window_size,
+                step_size=config.step_size,
+            )
+
+            X_train_fold, y_train_fold = (
+                fold_windowed_epochs["X_train"],
+                fold_windowed_epochs["y_train"],
+            )
+            X_val_fold, y_val_fold = (
+                fold_windowed_epochs["X_val"],
+                fold_windowed_epochs["y_val"],
+            )
+
+            # Remove artifacts within each fold
+            ar = ArtefactRemoval()
+            ar.get_rejection_thresholds(X_train_fold, config)
+
+            X_train_clean, y_train_clean = ar.reject_bad_epochs(
+                X_train_fold, y_train_fold
+            )
+            X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
+
+            # Train and evaluate the model within each fold
+            clf = choose_model(config.model, model_args)
+            clf.fit(X_train_clean, y_train_clean)
+
+            # Evaluate on validation fold
+            fold_predictions = clf.predict(X_val_clean)
+            fold_probabilities = clf.predict_proba(X_val_clean)
+
+            # Compute metrics for this fold
+            fold_metrics = compile_metrics(
+                y_true=y_val_clean,
+                y_pred=fold_predictions,
+                y_prob=fold_probabilities,
+                timings=None,
+                n_classes=len(event_id_finetune),
+            )
+
+            cv_metrics_list.append(fold_metrics)
+            print(f"Fold {fold_idx} Accuracy: {fold_metrics['Acc.']:.4f}")
+
+        # CV Results
+        # TODO: Discuss with team what metrics are relevant from CV. For now just the performance ones are computed
+
+        print("\n" + "=" * 60)
+        print("CROSS-VALIDATION RESULTS (Mean ± Std)")
+        print("=" * 60)
+
+        cv_mean_metrics = {}
+        cv_std_metrics = {}
+        metric_keys = cv_metrics_list[0].keys()
+
+        for key in metric_keys:
+            values = [m[key] for m in cv_metrics_list]
+            if key in [
+                "Train Time (ms)",
+                "Infer. Time (ms)",
+                "Avg. Filter Latency (ms)",
+                "ITR (bits/min)",
+            ]:
+                cv_mean_metrics[key] = round(np.mean(values), 2)
+                cv_std_metrics[key] = round(np.std(values), 2)
+            else:
+                cv_mean_metrics[key] = round(np.mean(values), 4)
+                cv_std_metrics[key] = round(np.std(values), 4)
+
+        # Create CV summary row
+        cv_summary = {}
+        cv_summary["Dataset"] = "CV (Training)"
+        for key in metric_keys:
+            if key in [
+                "Train Time (ms)",
+                "Infer. Time (ms)",
+                "Avg. Filter Latency (ms)",
+                "ITR (bits/min)",
+            ]:
+                cv_summary[key] = (
+                    f"{cv_mean_metrics[key]:.2f} ± {cv_std_metrics[key]:.2f}"
+                )
+            else:
+                cv_summary[key] = (
+                    f"{cv_mean_metrics[key]:.4f} ± {cv_std_metrics[key]:.4f}"
+                )
+
+        # Add CV results to metrics table
+        metrics_table.add_rows([cv_summary])
+        metrics_table.display()
+
+    # Results on Holdout
+
+    # Extract the windowed epochs
+    X_train_windows, y_train_windows = epochs_to_windows(
+        combined_epochs,
         window_size=config.window_size,
         step_size=config.step_size,
     )
-    
-    print(f"Total windows from test data: {len(X_test_windows)}")
-    
-    # 5-Fold Cross-Validation
-    n_folds = 5
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=config.random_state)
-    cv_metrics_list = []
-    
-    print(f"\nStarting {n_folds}-fold cross-validation...")
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X_test_windows, y_test_windows)):
-        print(f"\n{'='*60}")
-        print(f"Fold {fold_idx + 1}/{n_folds}")
-        print(f"{'='*60}")
-        
-        # Split data for this fold
-        X_finetune_fold = X_test_windows[train_idx]
-        y_finetune_fold = y_test_windows[train_idx]
-        X_test_fold = X_test_windows[val_idx]
-        y_test_fold = y_test_windows[val_idx]
-        
-        print(f"Finetuning set: {len(X_finetune_fold)} windows")
-        print(f"Test set: {len(X_test_fold)} windows")
-        
-        # Remove artifacts from finetuning data
-        ar = ArtefactRemoval()
-        ar.get_rejection_thresholds(X_finetune_fold, config)
-        X_finetune_clean, y_finetune_clean = ar.reject_bad_epochs(
-            X_finetune_fold, y_finetune_fold
+
+    ar = ArtefactRemoval()
+    ar.get_rejection_thresholds(X_train_windows, config)
+    X_train_clean, y_train_clean = ar.reject_bad_epochs(
+        X_train_windows, y_train_windows
+    )
+
+    # Construct Final Model
+    clf = choose_model(config.model, model_args)
+
+    # Train the final model on all clean training data
+    print("\nTraining final model on all finetuning data...")
+    start_train_time = time.time() * 1000
+    clf.fit(X_train_clean, y_train_clean)
+    end_train_time = time.time() * 1000
+
+    # Test on the holdout test set
+    if use_test:
+        # Prepare test data - Filter, Epoch and Window, Remove Artifacts
+        all_test_epochs_list = []
+        start_total_time = time.time() * 1000
+        for raw, events, sub_id in zip(x_raw_test, events_test, sub_ids_test):
+            # Filter the data
+            filtered_raw = filter.apply_filter_offline(raw)
+
+            # Create the epochs for testing
+            epochs = mne.Epochs(
+                filtered_raw,
+                events,
+                event_id=event_id_test,
+                tmin=0.5,
+                tmax=4.0,
+                preload=True,
+                baseline=None,
+            )
+
+            # TODO: Should we attach metadata?
+
+            all_test_epochs_list.append(epochs)
+
+        combined_test_epochs = mne.concatenate_epochs(all_test_epochs_list)
+        test_epochs = combined_test_epochs.get_data()
+        test_labels = combined_test_epochs.events[:, 2]
+
+        # Extract windowed epochs for testing
+        X_test_windows, y_test_windows = epochs_to_windows(
+            combined_test_epochs,
+            window_size=config.window_size,
+            step_size=config.step_size,
         )
-        
+
         # Also clean test data using the same thresholds
-        X_test_clean, y_test_clean = ar.reject_bad_epochs(X_test_fold, y_test_fold)
-        
-        print(f"After artifact removal - Finetuning: {len(X_finetune_clean)}, Test: {len(X_test_clean)}")
+        X_test_clean, y_test_clean = ar.reject_bad_epochs(
+            X_test_windows, y_test_windows
+        )
 
-        # Construct and train model on finetuning data
-        clf = choose_model(config.model, model_args)
-
-        # Finetune the model on finetuning fold
-        print(f"\nFinetuning model on fold {fold_idx + 1} training data...")
-        start_train_time = time.time() * 1000
-        clf.fit(X_finetune_clean, y_finetune_clean)
-        end_train_time = time.time() * 1000
-
-        # Evaluate on the test fold
-        print(f"Evaluating on fold {fold_idx + 1} test data...")
+        # Evaluate on holdout test set
+        print("Evaluating on holdout test set...")
         start_eval_time = time.time() * 1000
         test_predictions = clf.predict(X_test_clean)
         end_eval_time = time.time() * 1000
         test_probabilities = clf.predict_proba(X_test_clean)
+
         end_total_time = time.time() * 1000
 
-        # Compute metrics for this fold
-        fold_metrics = compile_metrics(
+        # Compute metrics for test set
+
+        test_metrics = compile_metrics(
             y_true=y_test_clean,
             y_pred=test_predictions,
             y_prob=test_probabilities,
@@ -192,71 +346,21 @@ if __name__ == "__main__":
                 "train_time": end_train_time - start_train_time,
                 "infer_latency": (end_eval_time - start_eval_time)
                 / max(1, len(y_test_clean)),
-                "total_latency": (end_total_time - start_eval_time)
+                "total_latency": (end_total_time - start_total_time)
                 / max(1, len(y_test_clean)),
                 "filter_latency": filter.get_filter_latency(),
             },
-            n_classes=len(event_id_test),
+            n_classes=len(event_id_finetune),
         )
-        
-        fold_metrics["Dataset"] = f"Fold {fold_idx + 1}"
-        cv_metrics_list.append(fold_metrics)
-        print(f"Fold {fold_idx + 1} Accuracy: {fold_metrics['Acc.']:.4f}")
-    
-    # Compute CV summary statistics
-    print("\n" + "=" * 60)
-    print("CROSS-VALIDATION RESULTS (Mean ± Std)")
-    print("=" * 60)
-    
-    cv_mean_metrics = {}
-    cv_std_metrics = {}
-    metric_keys = cv_metrics_list[0].keys()
-    
-    for key in metric_keys:
-        if key == "Dataset":
-            continue
-        values = [m[key] for m in cv_metrics_list]
-        if key in [
-            "Train Time (ms)",
-            "Infer. Time (ms)",
-            "Avg. Filter Latency (ms)",
-            "ITR (bits/min)",
-        ]:
-            cv_mean_metrics[key] = round(np.mean(values), 2)
-            cv_std_metrics[key] = round(np.std(values), 2)
-        else:
-            cv_mean_metrics[key] = round(np.mean(values), 4)
-            cv_std_metrics[key] = round(np.std(values), 4)
-    
-    # Create CV summary row
-    cv_summary = {}
-    cv_summary["Dataset"] = "CV (Mean ± Std)"
-    for key in metric_keys:
-        if key == "Dataset":
-            continue
-        if key in [
-            "Train Time (ms)",
-            "Infer. Time (ms)",
-            "Avg. Filter Latency (ms)",
-            "ITR (bits/min)",
-        ]:
-            cv_summary[key] = (
-                f"{cv_mean_metrics[key]:.2f} ± {cv_std_metrics[key]:.2f}"
-            )
-        else:
-            cv_summary[key] = (
-                f"{cv_mean_metrics[key]:.4f} ± {cv_std_metrics[key]:.4f}"
-            )
-    
-    # Add all fold results and CV summary to metrics table
-    metrics_table.add_rows(cv_metrics_list)
-    metrics_table.add_rows([cv_summary])
-    metrics_table.display()
-    
-    # Save the last fold's model (or you could save the best fold's model)
-    print("\n" + "=" * 60)
-    print("Saving final model (from last fold)...")
-    print("=" * 60)
+
+        # Add dataset label after computing metrics
+        test_metrics["Dataset"] = "Test (Holdout)"
+
+        metrics_table.add_rows([test_metrics])
+        print("\n" + "=" * 60)
+        print("FINAL RESULTS")
+        print("=" * 60)
+        metrics_table.display()
 
     # Save the Model and other Objects
     # MIRepNet uses .pt extension for PyTorch models
