@@ -1,0 +1,52 @@
+# Signal processing parameters
+window_size: 250
+step_size: 32
+fs: 160.0
+
+frequencies:
+  - 8.0
+  - 30.0
+order: 4
+
+# EEG Hardware/Channel setup
+channels:
+  - "Fp1"
+  - "Fp2"
+  - "T8"
+  - "F4"
+  - "Fz"
+  - "F3"
+  - "T7"
+  - "C4"
+  - "Cz"
+  - "C3"
+  - "P4"
+  - "Pz"
+  - "P3"
+  - "PO8"
+  - "Oz"
+  - "PO7"
+
+remove_channels: # Optional - Maybe for the future
+  - "Fp1"
+  - "Fp2"
+
+# Data and Classification parameters
+model: "MIRepNet" # Options: CSPSVM, SAE, MIRepNet, Riemann
+
+subjects_ids: # Range if given 2 numbers | List if specific ids
+  - 1
+  - 5
+
+n_folds: 3
+split: 0.8 # (Train-Test split)
+random_state: 42
+test: "sub-P999" # Options: sub-P999
+
+# Online
+online: "dino" # Options: dino (Needs an active eeg stream), prerecorded (for testing)
+replay_subject_id: "Phy-42" # Options: Phy-### (for Physionet data), sub-P### (for our data)
+ip: "127.0.0.1" # IP address for UDP communication to the dino game (Check the dino game for the values)
+port: 5005 # Port for the UDP communication to the dino game
+classification_threshold: 0.6 # Value between 0 and 1 to determine the confidence threshold for classification
+classification_buffer: 10 # Number of classifications to be buffered for majority voting
