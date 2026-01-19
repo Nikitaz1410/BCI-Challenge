@@ -15,9 +15,9 @@ import numpy as np
 from pylsl import StreamInlet, resolve_streams
 
 from bci.preprocessing.filters import Filter
-from bci.Transfer.transfer import BCIController
-from bci.Utils.bci_config import load_config
-from bci.Utils.utils import choose_model
+from bci.transfer.transfer import BCIController
+from bci.utils.bci_config import load_config
+from bci.utils.utils import choose_model
 
 if __name__ == "__main__":
     # Initialize the Objects

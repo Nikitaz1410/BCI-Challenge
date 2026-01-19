@@ -157,7 +157,7 @@ def filter_raw(
 
 
 # change: filter helpers moved to `bci.preprocessing.filters` for better structure
-from bci.Preprocessing.filters import (
+from bci.preprocessing.filters import (
     get_filter_params_from_config,
     create_filter_from_config,
     estimate_filter_latency,

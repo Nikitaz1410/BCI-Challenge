@@ -1,8 +1,8 @@
 from typing import Any, Dict, Optional
 
-from bci.Models.CSP_Baseline import CSP_Model
-from bci.Models.riemann import RiemannianClf
-from bci.Models.SAE import SAEModel
+from bci.models.CSP_Baseline import CSP_Model
+from bci.models.riemann import RiemannianClf
+from bci.models.SAE import SAEModel
 
 
 def choose_model(model_name: str, model_params: Optional[Dict[str, Any]] = None):

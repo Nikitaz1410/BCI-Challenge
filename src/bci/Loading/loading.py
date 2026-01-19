@@ -47,7 +47,7 @@ from mne.io import concatenate_raws
 import moabb
 from moabb.datasets import PhysionetMI
 
-from bci.Utils.bci_config import EEGConfig
+from bci.utils.bci_config import EEGConfig
 
 # Add the root directory to the Python path
 root_dir = str(Path(__file__).resolve().parents[3])  # BCI-Challange directory

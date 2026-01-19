@@ -13,7 +13,7 @@ import scipy.signal as signal
 import numpy as np
 import scipy
 
-from bci.Utils.bci_config import EEGConfig
+from bci.utils.bci_config import EEGConfig
 
 
 class Filter:

@@ -2,7 +2,7 @@ import socket
 import json
 import numpy as np
 
-from bci.Utils.bci_config import EEGConfig
+from bci.utils.bci_config import EEGConfig
 
 
 class BCIController:
