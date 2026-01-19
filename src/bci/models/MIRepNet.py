@@ -53,8 +53,8 @@ channel_positions = _channel_list_module.channel_positions
 all_channels_names = _channel_list_module.all_channels_names
 
 # The model expects exactly 45 channels (hardcoded in PatchEmbedding)
-# Use first 45 channels from all_channels_names as the target template
-TARGET_CHANNELS = all_channels_names[:45]
+# Match the MIRepNet repo's channel template ordering.
+TARGET_CHANNELS = use_channels_names
 
 # --------------------------------------------------------------------------- #
 # Utilities
@@ -78,6 +78,19 @@ def _as_int_labels(labels: Optional[np.ndarray], fallback_size: int) -> np.ndarr
         return labels.argmax(axis=1).astype(np.int64)
 
     raise ValueError("Labels must be 1D class indices or 2D one-hot arrays.")
+
+
+def _encode_labels(labels: np.ndarray) -> tuple[np.ndarray, Dict[int, int], Dict[int, int]]:
+    """
+    Encode integer labels into a consecutive 0..(C-1) range.
+
+    This mirrors the LabelEncoder usage in the MIRepNet repo.
+    """
+    unique = np.unique(labels)
+    label_to_index = {int(label): int(i) for i, label in enumerate(unique.tolist())}
+    index_to_label = {int(i): int(label) for label, i in label_to_index.items()}
+    encoded = np.array([label_to_index[int(label)] for label in labels], dtype=np.int64)
+    return encoded, label_to_index, index_to_label
 
 
 def _select_device(device: str = "auto") -> torch.device:
@@ -154,7 +167,7 @@ def pad_missing_channels_diff(x: np.ndarray, target_channels: list, actual_chann
     return padded
 
 
-def EA(x: np.ndarray) -> np.ndarray:
+def EA(x: np.ndarray, refEA: Optional[np.ndarray] = None) -> tuple[np.ndarray, np.ndarray]:
     """
     Euclidean Alignment preprocessing.
     
@@ -162,21 +175,78 @@ def EA(x: np.ndarray) -> np.ndarray:
     ----------
     x : numpy array
         data of shape (num_samples, num_channels, num_time_samples)
+    refEA : numpy array, optional
+        Reference covariance matrix. If None, computes from input data.
 
     Returns
     -------
     XEA : numpy array
         data of shape (num_samples, num_channels, num_time_samples)
+    refEA : numpy array
+        Reference covariance matrix used for alignment
     """
     cov = np.zeros((x.shape[0], x.shape[1], x.shape[1]))
     for i in range(x.shape[0]):
         cov[i] = np.cov(x[i])
-    refEA = np.mean(cov, 0)
+    
+    # Compute reference covariance if not provided
+    if refEA is None:
+        refEA = np.mean(cov, 0)
+    
     sqrtRefEA = fractional_matrix_power(refEA, -0.5)
     XEA = np.zeros(x.shape)
     for i in range(x.shape[0]):
         XEA[i] = np.dot(sqrtRefEA, x[i])
-    return XEA
+    return XEA, refEA
+
+
+def _normalize_subject_ids(
+    subject_ids: Optional[np.ndarray], n_samples: int
+) -> np.ndarray:
+    """
+    Ensure subject_ids is a 1D array aligned with samples.
+    If None, assume all samples belong to one subject.
+    """
+    if subject_ids is None:
+        return np.zeros(n_samples, dtype=np.int64)
+
+    subject_ids = np.asarray(subject_ids)
+    if subject_ids.ndim != 1:
+        raise ValueError("subject_ids must be a 1D array.")
+    if subject_ids.shape[0] != n_samples:
+        raise ValueError("subject_ids length must match number of samples.")
+    return subject_ids.astype(np.int64)
+
+
+def _apply_ea_by_subject(
+    signals: np.ndarray,
+    subject_ids: Optional[np.ndarray],
+    ref_by_subject: Optional[Dict[int, np.ndarray]] = None,
+) -> tuple[np.ndarray, Dict[int, np.ndarray]]:
+    """
+    Apply Euclidean Alignment per subject within a batch of trials.
+
+    Each subject gets its own reference covariance computed from the trials
+    belonging to that subject in the current batch.
+    """
+    subject_ids = _normalize_subject_ids(subject_ids, n_samples=signals.shape[0])
+    processed = np.zeros_like(signals, dtype=np.float32)
+    updated_refs: Dict[int, np.ndarray] = {} if ref_by_subject is None else dict(ref_by_subject)
+
+    for subject_id in np.unique(subject_ids):
+        subject_id_int = int(subject_id)
+        idx = np.where(subject_ids == subject_id)[0]
+        subject_trials = signals[idx].astype(np.float32)
+
+        if ref_by_subject is not None and subject_id_int in ref_by_subject:
+            subject_ea, ref = EA(subject_trials, ref_by_subject[subject_id_int])
+        else:
+            subject_ea, ref = EA(subject_trials)
+
+        processed[idx] = subject_ea
+        updated_refs[subject_id_int] = ref
+
+    return processed, updated_refs
 
 
 class _NumpyMIRepNetDataset(Dataset):
@@ -234,7 +304,7 @@ class MIRepNetModel:
 
     def __init__(
         self,
-        batch_size: int = 8,
+        batch_size: int = 32,
         epochs: int = 10,
         lr: float = 0.001,
         weight_decay: float = 1e-6,
@@ -249,7 +319,7 @@ class MIRepNetModel:
         Parameters
         ----------
         batch_size : int
-            Batch size for training (default: 8)
+            Batch size for training (default: 32)
         epochs : int
             Number of training epochs (default: 10)
         lr : float
@@ -286,6 +356,10 @@ class MIRepNetModel:
         self._model: Optional[nn.Module] = None
         self._meta: Dict[str, Any] = {}
         self._n_classes: Optional[int] = None
+        self._ea_ref: Optional[np.ndarray] = None  # Kept for backward compat; not used.
+        self._ea_ref_by_subject: Optional[Dict[int, np.ndarray]] = None
+        self._label_to_index: Optional[Dict[int, int]] = None
+        self._index_to_label: Optional[Dict[int, int]] = None
 
     # ------------------------- Training & prediction --------------------- #
 
@@ -293,23 +367,33 @@ class MIRepNetModel:
         self,
         signals: np.ndarray,
         task_labels: np.ndarray,
+        subject_ids: Optional[np.ndarray] = None,
     ) -> "MIRepNetModel":
         """
         Train (finetune) the MIRepNet model from numpy arrays.
 
         signals: numpy array shaped [N, C, T]
         task_labels: class indices or one-hot array shaped [N] or [N, num_classes]
+        subject_ids: optional array shaped [N] mapping each trial to a subject
         """
         signals = np.asarray(signals)
         if signals.ndim != 3:
             raise ValueError("Signals must have shape [N, C, T].")
 
         task_labels = _as_int_labels(task_labels, fallback_size=signals.shape[0])
-        self._n_classes = int(task_labels.max() + 1)
+        task_labels, label_to_index, index_to_label = _encode_labels(task_labels)
+        self._label_to_index = label_to_index
+        self._index_to_label = index_to_label
+        self._n_classes = int(len(label_to_index))
+        print(f"Training labels (original -> encoded): {label_to_index}")
+        print(f"Model will output probabilities for {self._n_classes} classes (0 to {self._n_classes-1})")
 
-        # Preprocess signals: EA and channel padding
-        print("Applying Euclidean Alignment...")
-        signals_processed = EA(signals.astype(np.float32))
+        # Preprocess signals: per-subject EA and channel padding
+        print("Applying Euclidean Alignment (per-subject)...")
+        signals_processed, ea_refs = _apply_ea_by_subject(
+            signals.astype(np.float32), subject_ids
+        )
+        self._ea_ref_by_subject = ea_refs
         
         # Always pad/interpolate to 45 channels (model requirement)
         # The model architecture expects exactly 45 channels (hardcoded in PatchEmbedding)
@@ -428,6 +512,8 @@ class MIRepNetModel:
         self._meta = {
             "n_channels": len(use_channels_names),
             "n_classes": self._n_classes,
+            "label_to_index": self._label_to_index,
+            "index_to_label": self._index_to_label,
         }
 
         return self
@@ -435,11 +521,13 @@ class MIRepNetModel:
     def predict(
         self,
         signals: np.ndarray,
+        subject_ids: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Run classification using a trained or restored MIRepNet model.
 
         signals: numpy array shaped [N, C, T]
+        subject_ids: optional array shaped [N] mapping each trial to a subject
         """
         if self._model is None:
             raise RuntimeError("Model is not trained or loaded. Call `fit` or `load` first.")
@@ -448,8 +536,11 @@ class MIRepNetModel:
         if signals.ndim != 3:
             raise ValueError("Signals must have shape [N, C, T].")
 
-        # Preprocess signals: EA and channel padding
-        signals_processed = EA(signals.astype(np.float32))
+        # Preprocess signals: per-subject EA and channel padding
+        signals_processed, ea_refs = _apply_ea_by_subject(
+            signals.astype(np.float32), subject_ids
+        )
+        self._ea_ref_by_subject = ea_refs
         
         # Always pad/interpolate to 45 channels (model requirement)
         target_num_channels = len(TARGET_CHANNELS)  # 45 channels
@@ -497,11 +588,13 @@ class MIRepNetModel:
     def predict_proba(
         self,
         signals: np.ndarray,
+        subject_ids: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Return class probabilities for classification.
 
         signals: numpy array shaped [N, C, T]
+        subject_ids: optional array shaped [N] mapping each trial to a subject
 
         Returns
         -------
@@ -514,8 +607,11 @@ class MIRepNetModel:
         if signals.ndim != 3:
             raise ValueError("Signals must have shape [N, C, T].")
 
-        # Preprocess signals: EA and channel padding
-        signals_processed = EA(signals.astype(np.float32))
+        # Preprocess signals: per-subject EA and channel padding
+        signals_processed, ea_refs = _apply_ea_by_subject(
+            signals.astype(np.float32), subject_ids
+        )
+        self._ea_ref_by_subject = ea_refs
         
         # Always pad/interpolate to 45 channels (model requirement)
         target_num_channels = len(TARGET_CHANNELS)  # 45 channels
@@ -575,6 +671,9 @@ class MIRepNetModel:
             "meta": self._meta,
             "n_classes": self._n_classes,
             "actual_channels": self.actual_channels,
+            "ea_ref_by_subject": self._ea_ref_by_subject,
+            "label_to_index": self._label_to_index,
+            "index_to_label": self._index_to_label,
         }
         torch.save(checkpoint, path)
         return path
@@ -588,6 +687,9 @@ class MIRepNetModel:
         meta = checkpoint["meta"]
         n_classes = checkpoint.get("n_classes", meta.get("n_classes", 2))
         actual_channels = checkpoint.get("actual_channels")
+        ea_ref_by_subject = checkpoint.get("ea_ref_by_subject")
+        label_to_index = checkpoint.get("label_to_index")
+        index_to_label = checkpoint.get("index_to_label")
 
         instance = cls(
             device=device,
@@ -595,6 +697,9 @@ class MIRepNetModel:
         )
         instance._meta = meta
         instance._n_classes = n_classes
+        instance._ea_ref_by_subject = ea_ref_by_subject
+        instance._label_to_index = label_to_index
+        instance._index_to_label = index_to_label
 
         # Initialize model
         model = mlm_mask(
@@ -615,21 +720,26 @@ class MIRepNetModel:
 def train_mirepnet(
     signals: np.ndarray,
     task_labels: np.ndarray,
+    subject_ids: Optional[np.ndarray] = None,
     **kwargs
 ) -> MIRepNetModel:
     """
     Train and return an MIRepNetModel instance.
     """
     return MIRepNetModel(**kwargs).fit(
-        signals=signals, task_labels=task_labels
+        signals=signals, task_labels=task_labels, subject_ids=subject_ids
     )
 
 
-def predict_mirepnet(model: MIRepNetModel, signals: np.ndarray) -> np.ndarray:
+def predict_mirepnet(
+    model: MIRepNetModel,
+    signals: np.ndarray,
+    subject_ids: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """
     Run prediction using an existing MIRepNetModel.
     """
-    return model.predict(signals=signals)
+    return model.predict(signals=signals, subject_ids=subject_ids)
 
 
 def save_mirepnet(model: MIRepNetModel, path: str) -> str:

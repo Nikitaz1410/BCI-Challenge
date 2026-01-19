@@ -41,7 +41,8 @@ subjects_ids: # Range if given 2 numbers | List if specific ids
 n_folds: 3
 split: 0.8 # (Train-Test split)
 random_state: 42
-test: "sub-P999" # Options: sub-P999, sub-P554
+finetune: "sub-P544" # Options: sub-P999, sub-P544
+test: "sub-P999"  # Options: sub-P999, sub-P544
 
 # Online
 online: "dino" # Options: dino (Needs an active eeg stream), prerecorded (for testing)

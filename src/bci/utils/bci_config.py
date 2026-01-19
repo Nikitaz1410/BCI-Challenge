@@ -25,6 +25,7 @@ class EEGConfig:
     split: float
     random_state: int
     test: str
+    finetune: str
 
     # Online Mode
     online: str
