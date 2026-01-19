@@ -9,6 +9,9 @@ This layout allows you to import your code as a package (e.g., `import bci.acqui
 * **`src/bci`**: The main source code package.
 * **`pyproject.toml`**: The configuration file managing dependencies and build settings.
 * **`uv.lock`**: The lockfile ensuring reproducible installations.
+* **`resources/configs`**: Directory containing configuration files.
+* **`data`**: Directory containing data files.
+* **`resources/game_assets/dino`**: Directory containing the assets for the dino game. !! Make sure to copy them there !!
 
 ## 🚀 Getting Started
 
@@ -38,4 +41,4 @@ To get started with the project, follow these steps:
 **Online - Dino Game**
 1. First, make sure to adapt the config file located at `src/bci/config/config.yaml` to have online_mode set to "dino".
 2-4. Same as the "Online - No Dino Game" instructions above.
-5. Run the dino game script from the project root: `<run> src/bci/dino_game.py`
+5. Run the dino game script from the project root: `<run> src/bci/Game/DinoGamev2.py`
