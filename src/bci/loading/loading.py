@@ -113,6 +113,7 @@ def _get_raw_xdf_offline(
         "PO7",
         "PO8",
         "Oz",
+        "Keyboard",  # We need to take into consideration extra labels
     ]  # Manually set for g.Nautilus, standard 10-20 montage
 
     # Load the data
@@ -175,12 +176,13 @@ def _get_raw_xdf_offline(
 
     # Get EEG data - https://mne.tools/dev/auto_examples/io/read_xdf.html#ex-read-xdf
     data = streams[eeg_channel]["time_series"].T * 1e-6  # scaling the data to volts
-    print(len(data), data.shape)
 
-    # # exclude last channel if it is impedance
-    # if channel_labels[-1].lower() in ["ts", "impedances", "keyboard"]:
-    #     data = data[:-1, :]
-    #     channel_labels = channel_labels[:-1]
+    # exclude last channel if it is impedance
+    if channel_labels[-1].lower() in ["ts", "impedances", "keyboard"]:
+        data = data[:-1, :]
+        channel_labels = channel_labels[:-1]
+
+    print(len(data), data.shape)
 
     # Verify we have the correct number of channels
     if data.shape[0] != len(channel_labels):
@@ -411,6 +413,7 @@ def load_physionet_data(subjects: list[int], root: Path, config: EEGConfig) -> t
 def load_target_subject_data(
     root: Path,
     source_path: Path,
+    target_path: Path,
     config: EEGConfig,
     task_type: str = "all",
     limit: int = 0,
@@ -421,10 +424,10 @@ def load_target_subject_data(
     2. If empty, processes XDF from source_folder.
     3. Infers and saves event_id mapping.
     """
-    target_dir = root / "data" / "datasets" / "target"
-    raw_save_dir = target_dir / "raws"
-    event_save_dir = target_dir / "events"
-    event_id_path = target_dir / "event_id.json"
+
+    raw_save_dir = target_path / "raws"
+    event_save_dir = target_path / "events"
+    event_id_path = target_path / "event_id.json"
 
     raw_save_dir.mkdir(parents=True, exist_ok=True)
     event_save_dir.mkdir(parents=True, exist_ok=True)
@@ -502,7 +505,9 @@ def load_target_subject_data(
             continue
 
         raw.resample(160)
-        raw.pick(channels)
+        print("Channel names:", raw.ch_names)
+
+        # raw.pick(channels)
 
         # current_events, current_event_id = mne.events_from_annotations(raw)
         # print("Inferred event IDs:", current_event_id)

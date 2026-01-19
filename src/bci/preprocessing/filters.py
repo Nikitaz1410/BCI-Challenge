@@ -6,12 +6,10 @@ This keeps filtering logic in a single file for clarity and reuse.
 
 from typing import Tuple
 
-import numpy as np
 import mne
-import scipy.signal as signal
-
 import numpy as np
 import scipy
+import scipy.signal as signal
 
 from bci.utils.bci_config import EEGConfig
 
