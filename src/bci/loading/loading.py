@@ -507,7 +507,7 @@ def load_target_subject_data(
         raw.resample(160)
         print("Channel names:", raw.ch_names)
 
-        raw.pick(channels)
+        # raw.pick(channels)
 
         # current_events, current_event_id = mne.events_from_annotations(raw)
         # print("Inferred event IDs:", current_event_id)
