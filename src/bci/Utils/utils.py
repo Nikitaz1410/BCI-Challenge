@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional
 from bci.models.CSP_Baseline import CSP_Model
 from bci.models.riemann import RiemannianClf
 from bci.models.SAE import SAEModel
+from bci.models.MIRepNet import MIRepNetModel
 
 
 def choose_model(model_name: str, model_params: Optional[Dict[str, Any]] = None):
@@ -27,7 +28,12 @@ def choose_model(model_name: str, model_params: Optional[Dict[str, Any]] = None)
 
     # 2. Define available models mapping (Name -> Class)
     # Note: We map to the Class itself, not an instance of the class
-    model_registry = {"riemann": RiemannianClf, "sae": SAEModel, "cspsvm": CSP_Model}
+    model_registry = {
+        "riemann": RiemannianClf,
+        "sae": SAEModel,
+        "cspsvm": CSP_Model,
+        "mirepnet": MIRepNetModel,
+    }
 
     # 3. Normalize input
     key = model_name.lower().strip()

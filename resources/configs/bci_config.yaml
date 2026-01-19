@@ -32,11 +32,11 @@ remove_channels: # Optional - Maybe for the future
   - "Fp2"
 
 # Data and Classification parameters
-model: "Riemann" # Options: CSPSVM, SAE
+model: "MIRepNet" # Options: CSPSVM, SAE, MIRepNet, Riemann
 
 subjects_ids: # Range if given 2 numbers | List if specific ids
   - 1
-  - 10
+  - 5
 
 n_folds: 3
 split: 0.8 # (Train-Test split)

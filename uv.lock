@@ -90,11 +90,13 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "autoreject" },
+    { name = "einops" },
     { name = "lightgbm" },
     { name = "lightning" },
     { name = "matplotlib" },
     { name = "mne" },
     { name = "moabb" },
+    { name = "numpy" },
     { name = "pandas" },
     { name = "pygame" },
     { name = "pylsl" },
@@ -109,11 +111,13 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "autoreject", specifier = ">=0.4.3" },
+    { name = "einops", specifier = ">=0.8.1" },
     { name = "lightgbm", specifier = ">=4.6.0" },
     { name = "lightning", specifier = ">=2.6.0" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "mne", specifier = ">=1.11.0" },
     { name = "moabb", specifier = ">=1.4.3" },
+    { name = "numpy", specifier = ">=1.24.4" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pygame", specifier = ">=2.6.1" },
     { name = "pylsl", specifier = ">=1.17.6" },
@@ -252,6 +256,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/60/d9/8cf6b30fc6456936bc17f738828d08eb7e057cc3c435c0640ab3dfdb643b/EDFlib-Python-1.0.8.tar.gz", hash = "sha256:42de3b7980809f37fcc44e3cddc837a3237b69b937a81335dd1f9ffaaf3f2e19", size = 25528, upload-time = "2023-09-14T11:05:28.07Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d9/74/3152076443abeee13bcc3c91585863d3a1491e337c983751d30e21b98aea/EDFlib_Python-1.0.8-py3-none-any.whl", hash = "sha256:0c4ac78a0ac7af00e1c0aec582223ff9e330544d5b758f0e06508ed5188dd9e4", size = 26625, upload-time = "2023-09-14T11:05:26.052Z" },
+]
+
+[[package]]
+name = "einops"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/81/df4fbe24dff8ba3934af99044188e20a98ed441ad17a274539b74e82e126/einops-0.8.1.tar.gz", hash = "sha256:de5d960a7a761225532e0f1959e5315ebeafc0cd43394732f103ca44b9837e84", size = 54805, upload-time = "2025-02-09T03:17:00.434Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/62/9773de14fe6c45c23649e98b83231fffd7b9892b6cf863251dc2afa73643/einops-0.8.1-py3-none-any.whl", hash = "sha256:919387eb55330f5757c6bea9165c5ff5cfe63a642682ea788a6d472576d81737", size = 64359, upload-time = "2025-02-09T03:17:01.998Z" },
 ]
 
 [[package]]

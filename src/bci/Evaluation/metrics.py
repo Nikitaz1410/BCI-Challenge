@@ -156,6 +156,12 @@ def compute_ece(y_true, y_prob, n_bins=10):
     Returns:
         float: The ECE score (lower is better).
     """
+    if y_prob is None:
+        return float("nan")
+    y_prob = np.asarray(y_prob)
+    if y_prob.ndim != 2:
+        return float("nan")
+
     # 1. Get the predicted class and the associated confidence (probability)
     predictions = np.argmax(y_prob, axis=1)
     confidences = np.max(y_prob, axis=1)
@@ -286,8 +292,25 @@ def compile_metrics(y_true, y_pred, y_prob, timings, n_classes):
     metrics["Acc."] = round(accuracy_score(y_true, y_pred), 4)
     metrics["F1 Score"] = round(f1_score(y_true, y_pred, average="macro"), 4)
     metrics["B. Acc."] = round(balanced_accuracy_score(y_true, y_pred), 4)
-    metrics["ECE"] = round(compute_ece(y_true, y_prob, n_bins=10), 4)
-    metrics["Brier"] = round(brier_score_loss(y_true, y_prob), 4)
+    ece = compute_ece(y_true, y_prob, n_bins=10)
+    metrics["ECE"] = round(ece, 4) if np.isfinite(ece) else float("nan")
+
+    # Brier score:
+    # - sklearn's brier_score_loss is binary-only.
+    # - Here we compute a multiclass Brier score: mean over samples of sum_k (p_k - y_k)^2
+    brier = float("nan")
+    if y_prob is not None:
+        y_prob_arr = np.asarray(y_prob)
+        if y_prob_arr.ndim == 2 and y_prob_arr.shape[0] == len(y_true):
+            classes = np.unique(y_true)
+            # Build one-hot ground truth aligned to columns via sorted unique labels
+            classes_sorted = np.sort(classes)
+            y_true_idx = np.searchsorted(classes_sorted, y_true)
+            k = y_prob_arr.shape[1]
+            if k == len(classes_sorted):
+                y_onehot = np.eye(k, dtype=float)[y_true_idx]
+                brier = float(np.mean(np.sum((y_prob_arr - y_onehot) ** 2, axis=1)))
+    metrics["Brier"] = round(brier, 4) if np.isfinite(brier) else float("nan")
 
     # Timings
     if timings is not None:

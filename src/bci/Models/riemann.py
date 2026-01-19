@@ -56,8 +56,13 @@ class RiemannianClf:
         np.ndarray: Predicted class probabilities
         """
         try:
+            # `_extract_features` returns covariance matrices of shape:
+            # - (n_trials, n_channels, n_channels) for batch input
+            # - (n_channels, n_channels) for a single trial
             cov = self._extract_features(cov)
-            return self.clf.predict_proba(cov[np.newaxis, ...])
+            if cov.ndim == 2:
+                cov = cov[np.newaxis, ...]
+            return self.clf.predict_proba(cov)
         except ValueError as e:
             print(f"Error in feature extraction: {e}")
             return None

@@ -295,10 +295,6 @@ if __name__ == "__main__":
 
         # Compute metrics for test set
 
-        test_metrics = {}
-
-        test_metrics["Dataset"] = "Test (Holdout)"
-
         test_metrics = compile_metrics(
             y_true=y_test_clean,
             y_pred=test_predictions,
@@ -313,6 +309,9 @@ if __name__ == "__main__":
             },
             n_classes=len(event_id_train),
         )
+        
+        # Add dataset label after computing metrics
+        test_metrics["Dataset"] = "Test (Holdout)"
 
         metrics_table.add_rows([test_metrics])
         print("\n" + "=" * 60)

@@ -6,7 +6,7 @@ resources/game_assets
 .vscode
 
 # Byte-compiled / optimized / DLL files
-__pycache__/
+*__pycache__/
 *.py[codz]
 *$py.class
 
@@ -157,7 +157,7 @@ activemq-data/
 # Environments
 .env
 .envrc
-.venv
+*.venv
 env/
 venv/
 ENV/

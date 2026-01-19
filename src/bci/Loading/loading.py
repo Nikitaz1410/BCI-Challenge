@@ -477,7 +477,7 @@ def load_target_subject_data(
 
     if not selected_files:
         raise FileNotFoundError(
-            f"No XDF files matching category '{task_type}' found in {source_folder}"
+            f"No XDF files matching category '{task_type}' found in {source_path}"
         )
 
     if limit:
