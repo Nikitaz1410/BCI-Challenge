@@ -1,8 +1,6 @@
-<<<<<<< HEAD
 *.DS_Store
 data
 resources/models
-resources/game_assets
 .vscode
 
 # Byte-compiled / optimized / DLL files
