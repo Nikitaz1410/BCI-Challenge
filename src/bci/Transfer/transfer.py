@@ -23,9 +23,9 @@ class BCIController:
         self._connect_to_marker_stream()
 
         # Only connect to a socket in case the dino game is expected
-        if self.config.online == "dino":
-            # Connect to the dinogame UDP server to send commands
-            self._connect_socket(self.config.ip, self.config.port)
+        # if self.config.online == "dino":
+        # Connect to the dinogame UDP server to send commands
+        # self._connect_socket(self.config.ip, self.config.port)
 
     def _connect_socket(self, ip: str, port: int):
         try:
@@ -57,7 +57,7 @@ class BCIController:
     ) -> None:
         sock.sendto(payload, (ip, port))
 
-    def send_command(self, probabilities: np.ndarray):
+    def send_command(self, probabilities: np.ndarray, sock: socket.socket):
         probabilities = probabilities.T
         # Update the classification buffer
         if np.isnan(self.classification_buffer).any():
@@ -74,11 +74,13 @@ class BCIController:
             most_probable_command = np.argmax(buffer_probabilities)
 
             # Check if the command confidence is over the manual threshold and only send the command if it is
-            if buffer_probabilities[most_probable_command] >= self.threshold:
-                label_marker = self.COMMAND_MAP[most_probable_command]
-                if self.config.online == "dino":
-                    # Only send the command if the dino game is expected
-                    payload = self._build_prediction(*label_marker)
-                    self._send_udp(
-                        self.client_socket, payload, self.config.ip, self.config.port
-                    )
+            print(f"Buffer Probability: {buffer_probabilities[most_probable_command]}")
+            # if buffer_probabilities[most_probable_command] >= self.threshold:
+
+            label_marker = self.COMMAND_MAP[most_probable_command]
+            if self.config.online == "dino":
+                # Only send the command if the dino game is expected
+
+                payload = self._build_prediction(*label_marker)
+                # TODO: Check how to bind client to server
+                self._send_udp(sock, payload, self.config.ip, self.config.port)

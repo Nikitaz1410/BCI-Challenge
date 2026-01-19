@@ -40,5 +40,5 @@ To get started with the project, follow these steps:
 
 **Online - Dino Game**
 1. First, make sure to adapt the config file located at `src/bci/config/config.yaml` to have online_mode set to "dino".
-2-4. Same as the "Online - No Dino Game" instructions above.
-5. Run the dino game script from the project root: `<run> src/bci/Game/DinoGamev2.py`
+2. Run the dino game script from the project root: `<run> src/bci/Game/DinoGamev2.py`
+3. Same as the "Online - No Dino Game" instructions above (2-4).

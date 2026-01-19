@@ -6,6 +6,7 @@
 # Output the classification results in real-time
 
 import pickle
+import socket
 import sys
 import time
 from pathlib import Path
@@ -82,7 +83,16 @@ if __name__ == "__main__":
     streams = resolve_streams(wait_time=5.0)
 
     eeg_streams = [s for s in streams if s.type() == "EEG"]
-    label_streams = [s for s in streams if s.type() == "Markers"]
+    if config.online == "dino":
+        label_streams = [
+            s
+            for s in streams
+            if s.type() == "Markers" and s.name() == "MyDinoGameMarkerStream"
+        ]
+    else:
+        label_streams = [
+            s for s in streams if s.type() == "Markers" and s.name() == "Labels_Stream"
+        ]
 
     if not eeg_streams or not label_streams:
         print("❌ Could not find EEG or Markers streams.")
@@ -92,88 +102,93 @@ if __name__ == "__main__":
     inlet_labels = StreamInlet(label_streams[0], max_chunklen=32)
 
     print("Starting to read data from the EEG stream...")
+    print(f"Reading Labels from {label_streams[0].name()}")
 
-    while True:
-        try:
-            start_classification_time = time.time() * 1000  # in milliseconds
-            eeg_chunk, timestamp = inlet.pull_chunk()
-            labels_chunk, label_timestamp = inlet_labels.pull_chunk()
-            crt_label = None
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        while True:
+            try:
+                start_classification_time = time.time() * 1000  # in milliseconds
+                eeg_chunk, timestamp = inlet.pull_chunk()
+                labels_chunk, label_timestamp = inlet_labels.pull_chunk()
+                crt_label = None
 
-            # Check if sample and labels are valid and non-empty
-            if not eeg_chunk or not labels_chunk:
-                continue
+                # Check if sample and labels are valid and non-empty
+                if eeg_chunk:
+                    # Convert to numpy arrays and transpose to (n_channels, n_samples)
+                    eeg_chunk = np.array(eeg_chunk).T  # shape (n_channels, n_samples)
+                    n_new_samples = eeg_chunk.shape[1]
+                    # Safety: If new data is larger than the buffer, just take the end of it
+                    if n_new_samples >= config.window_size:
+                        buffer = eeg_chunk[:, -config.window_size :]
 
-            # Convert to numpy arrays and transpose to (n_channels, n_samples)
-            eeg_chunk = np.array(eeg_chunk).T  # shape (n_channels, n_samples)
-            labels_chunk = np.array(labels_chunk).T  # shape (1, n_samples)
+                    # Update the buffers with the new chunks of data
+                    buffer[:, :-n_new_samples] = buffer[:, n_new_samples:]
+                    buffer[:, -n_new_samples:] = eeg_chunk
 
-            n_new_samples = eeg_chunk.shape[1]
-            n_new_labels = labels_chunk.shape[1]
+                if labels_chunk:
+                    labels_chunk = np.array(labels_chunk).T  # shape (1, n_samples)
 
-            # Safety: If new data is larger than the buffer, just take the end of it
-            if n_new_samples >= config.window_size:
-                buffer = eeg_chunk[:, -config.window_size :]
+                    n_new_labels = labels_chunk.shape[1]
 
-            if n_new_labels >= config.window_size:
-                label_buffer = labels_chunk[:, -config.window_size :]
+                    if n_new_labels >= config.window_size:
+                        label_buffer = labels_chunk[:, -config.window_size :]
 
-            # Update the buffers with the new chunks of data
-            buffer[:, :-n_new_samples] = buffer[:, n_new_samples:]
-            buffer[:, -n_new_samples:] = eeg_chunk
+                    label_buffer[:, :-n_new_labels] = label_buffer[:, n_new_labels:]
+                    label_buffer[:, -n_new_labels:] = labels_chunk
 
-            label_buffer[:, :-n_new_labels] = label_buffer[:, n_new_labels:]
-            label_buffer[:, -n_new_labels:] = labels_chunk
+                # Extract the current label (most present in the buffer)
+                # TODO: check this for the dino game -> Might need mapping
+                unique, counts = np.unique(label_buffer, return_counts=True)
+                if len(unique) > 0:
+                    label_counts = dict(zip(unique, counts))
+                    crt_label = max(label_counts, key=lambda k: label_counts[k])
+                    print(
+                        f"Current label: {crt_label} - {markers.get(crt_label, 'unknown')}"
+                    )
+                else:
+                    crt_label = 0  # fallback to unknown
 
-            # Extract the current label (most present in the buffer)
-            unique, counts = np.unique(label_buffer, return_counts=True)
-            if len(unique) > 0:
-                label_counts = dict(zip(unique, counts))
-                crt_label = max(label_counts, key=lambda k: label_counts[k])
+                # Filter the data
+                filtered_data = filter.apply_filter_online(buffer)
+
+                # Artifact Rejection: Skipped for now
+
+                # Create the features and classify
+                probabilities = clf.predict_proba(filtered_data)
+
+                if probabilities is None:
+                    print("Warning: Model returned None for probability.")
+                    continue  # skip this iteration
+
+                controller.send_command(probabilities, sock)
+
+                prediction = np.argmax(
+                    probabilities, axis=1
+                )[
+                    0
+                ]  # To account to the fact that the classifier was trained with labels 1,2,3
                 print(
-                    f"Current label: {crt_label} - {markers.get(crt_label, 'unknown')}"
+                    f"Predicted class: {prediction+1} - {markers.get(prediction+1, 'unknown')} with probability {probabilities[0][prediction]:.4f}"
                 )
-            else:
-                crt_label = 0  # fallback to unknown
+                total_predictions += 1
+                if probabilities[0][prediction] < probability_threshold:
+                    total_rejected += 1
+                else:
+                    total_successes += int(prediction == crt_label)
+                    total_fails += int(prediction != crt_label)
 
-            # Filter the data
-            filtered_data = filter.apply_filter_online(buffer)
+                number_of_classifications += 1
 
-            # Artifact Rejection: Skipped for now
-
-            # Create the features and classify
-            probabilities = clf.predict_proba(filtered_data)
-
-            if probabilities is None:
-                print("Warning: Model returned None for probability.")
-                continue  # skip this iteration
-
-            controller.send_command(probabilities)
-
-            prediction = np.argmax(probabilities, axis=1)[0]
-            prediction += 1  # To account to the fact that the classifier was trained with labels 1,2,3
-            print(
-                f"Predicted class: {prediction} - {markers.get(prediction, 'unknown')} with probability {probabilities[0][prediction]:.4f}"
-            )
-            total_predictions += 1
-            if probabilities[0][prediction] < probability_threshold:
-                total_rejected += 1
-            else:
-                total_successes += int(prediction == crt_label)
-                total_fails += int(prediction != crt_label)
-
-            number_of_classifications += 1
-
-            end_classification_time = time.time() * 1000  # in milliseconds
-            avg_time_per_classification += (
-                end_classification_time - start_classification_time
-            )
-        except KeyboardInterrupt:
-            print("Stopping the online processing.")
-            print(
-                f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications):.2f} ms"
-            )
-            print(
-                f"Total Predictions: {total_predictions}, Rejected: {total_rejected},  Successes: {total_successes}, Fails: {total_fails}"
-            )
-            break
+                end_classification_time = time.time() * 1000  # in milliseconds
+                avg_time_per_classification += (
+                    end_classification_time - start_classification_time
+                )
+            except KeyboardInterrupt:
+                print("Stopping the online processing.")
+                print(
+                    f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications):.2f} ms"
+                )
+                print(
+                    f"Total Predictions: {total_predictions}, Rejected: {total_rejected},  Successes: {total_successes}, Fails: {total_fails}"
+                )
+                break
