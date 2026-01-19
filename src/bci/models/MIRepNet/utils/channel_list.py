@@ -77,9 +77,16 @@ Lee_origin_chn_names = ['FP1', 'FP2', 'F7', 'F3', 'FZ', 'F4', 'F8', 'FC5', 'FC1'
                          'TP10', 'P7', 'P3', 'PZ', 'P4', 'P8', 'PO9', 'O1', 'OZ', 'O2', 'PO10', 'FC3', 'FC4', 'C5', 'C1', 'C2', 'C6', 'CP3', 'CPZ', 
                          'CP4', 'P1', 'P2','POZ',  'FT9','FTT9', 'TPP7', 'TP7', 'TPP9', 'FT10', 'FTT10', 'TPP8', 'TP8', 'TPP10', 'F9', 'F10','AF7', 'AF3', 'AF4', 'AF8','PO3','PO4']
 
-use_channels_names = [
-            'FP1', 'FP2', 'T8', 'F4', 'FZ', 'F3', 'T7', 'C4', 'CZ', 'C3', 
-            'P4', 'PZ', 'P3', 'PO8', 'OZ', 'PO7',
+use_channels_names = [      
+                       #    'FP1', 'FPZ', 'FP2', 
+                       #        'AF3', 'AF4', 
+            'F7', 'F5', 'F3', 'F1', 'FZ', 'F2', 'F4', 'F6', 'F8', 
+        'FT7', 'FC5', 'FC3', 'FC1', 'FCZ', 'FC2', 'FC4', 'FC6', 'FT8', 
+            'T7', 'C5', 'C3', 'C1', 'CZ', 'C2', 'C4', 'C6', 'T8', 
+        'TP7', 'CP5', 'CP3', 'CP1', 'CPZ', 'CP2', 'CP4', 'CP6', 'TP8',
+             'P7', 'P5', 'P3', 'P1', 'PZ', 'P2', 'P4', 'P6', 'P8', 
+                   #  'PO7',  'PO3', 'POZ',  'PO4', 'PO8', 
+                             #  'O1', 'OZ', 'O2',
         ]
 
 all_channels_names = [      
