@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from pylsl import StreamInlet, resolve_streams
 
-from bci.Preprocessing.filters import Filter
+from bci.preprocessing.filters import Filter
 from bci.Transfer.transfer import BCIController
 from bci.Utils.bci_config import load_config
 from bci.Utils.utils import choose_model

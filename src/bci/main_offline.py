@@ -9,21 +9,21 @@ import pandas as pd
 from sklearn.model_selection import GroupKFold
 
 # Evaluation
-from bci.Evaluation.metrics import MetricsTable, compile_metrics
+from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
-from bci.Loading.loading import load_physionet_data, load_target_subject_data
-from bci.Preprocessing.artefact_removal import ArtefactRemoval
+from bci.loading.loading import load_physionet_data, load_target_subject_data
+from bci.preprocessing.artefact_removal import ArtefactRemoval
 
 # Preprocessing
-from bci.Preprocessing.filters import (
+from bci.preprocessing.filters import (
     Filter,
 )
-from bci.Preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
+from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
 
 # Utils
-from bci.Utils.bci_config import load_config
-from bci.Utils.utils import (
+from bci.utils.bci_config import load_config
+from bci.utils.utils import (
     choose_model,
 )  # Constructs the model of your choosing (can be easily extended)
 
