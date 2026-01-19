@@ -13,8 +13,9 @@ from pathlib import Path
 import numpy as np
 from pylsl import StreamInlet, resolve_streams
 
-from bci.Loading.bci_config import load_config
 from bci.Preprocessing.filters import Filter
+from bci.Transfer.transfer import BCIController
+from bci.Utils.bci_config import load_config
 from bci.Utils.utils import choose_model
 
 if __name__ == "__main__":
@@ -48,6 +49,9 @@ if __name__ == "__main__":
     clf = choose_model(config.model)
     clf = clf.load(model_path)
 
+    # Transfer Function
+    controller = BCIController(config)
+
     buffer = np.zeros((len(config.channels), int(config.window_size)), dtype=np.float32)
     label_buffer = np.zeros((1, int(config.window_size)), dtype=np.int32)
 
@@ -68,6 +72,8 @@ if __name__ == "__main__":
         2: "left_hand",
         3: "right_hand",
     }
+
+    # Add stream finding logic based on mode
 
     print("Initializing preprocessing and model objects completed!")
 
@@ -90,27 +96,34 @@ if __name__ == "__main__":
     while True:
         try:
             start_classification_time = time.time() * 1000  # in milliseconds
-            sample, timestamp = inlet.pull_chunk()
-            labels, label_timestamp = inlet_labels.pull_chunk()
+            eeg_chunk, timestamp = inlet.pull_chunk()
+            labels_chunk, label_timestamp = inlet_labels.pull_chunk()
             crt_label = None
 
             # Check if sample and labels are valid and non-empty
-            if not sample or not labels:
+            if not eeg_chunk or not labels_chunk:
                 continue
 
             # Convert to numpy arrays and transpose to (n_channels, n_samples)
-            sample = np.array(sample).T  # shape (n_channels, n_samples)
-            labels = np.array(labels).T  # shape (1, n_samples)
-            n_new_samples = sample.shape[1]
-            n_new_labels = labels.shape[1]
+            eeg_chunk = np.array(eeg_chunk).T  # shape (n_channels, n_samples)
+            labels_chunk = np.array(labels_chunk).T  # shape (1, n_samples)
 
-            # Shift the buffer to the left
-            buffer = np.roll(buffer, -n_new_samples, axis=1)
-            label_buffer = np.roll(label_buffer, -n_new_labels, axis=1)
+            n_new_samples = eeg_chunk.shape[1]
+            n_new_labels = labels_chunk.shape[1]
 
-            # Add new samples to the end of the buffer
-            buffer[:, -n_new_samples:] = sample
-            label_buffer[:, -n_new_labels:] = labels
+            # Safety: If new data is larger than the buffer, just take the end of it
+            if n_new_samples >= config.window_size:
+                buffer = eeg_chunk[:, -config.window_size :]
+
+            if n_new_labels >= config.window_size:
+                label_buffer = labels_chunk[:, -config.window_size :]
+
+            # Update the buffers with the new chunks of data
+            buffer[:, :-n_new_samples] = buffer[:, n_new_samples:]
+            buffer[:, -n_new_samples:] = eeg_chunk
+
+            label_buffer[:, :-n_new_labels] = label_buffer[:, n_new_labels:]
+            label_buffer[:, -n_new_labels:] = labels_chunk
 
             # Extract the current label (most present in the buffer)
             unique, counts = np.unique(label_buffer, return_counts=True)
@@ -129,18 +142,21 @@ if __name__ == "__main__":
             # Artifact Rejection: Skipped for now
 
             # Create the features and classify
-            probability = clf.predict_proba(filtered_data)
+            probabilities = clf.predict_proba(filtered_data)
 
-            if probability is None:
+            if probabilities is None:
                 print("Warning: Model returned None for probability.")
                 continue  # skip this iteration
 
-            prediction = np.argmax(probability, axis=1)[0]
+            controller.send_command(probabilities)
+
+            prediction = np.argmax(probabilities, axis=1)[0]
+            prediction += 1  # To account to the fact that the classifier was trained with labels 1,2,3
             print(
-                f"Predicted class: {prediction} - {markers.get(prediction, 'unknown')} with probability {probability[0][prediction]:.4f}"
+                f"Predicted class: {prediction} - {markers.get(prediction, 'unknown')} with probability {probabilities[0][prediction]:.4f}"
             )
             total_predictions += 1
-            if probability[0][prediction] < probability_threshold:
+            if probabilities[0][prediction] < probability_threshold:
                 total_rejected += 1
             else:
                 total_successes += int(prediction == crt_label)

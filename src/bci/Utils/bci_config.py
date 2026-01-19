@@ -29,6 +29,10 @@ class EEGConfig:
     # Online Mode
     online: str
     replay_subject_id: str
+    ip: str
+    port: int
+    classification_threshold: float
+    classification_buffer: int
 
     # Optional with default
     remove_channels: Optional[List[str]] = field(default_factory=list)

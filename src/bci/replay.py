@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 from pylsl import StreamInfo, StreamOutlet
 
-from bci.Loading.bci_config import load_config
 from bci.Loading.loading import load_physionet_data, load_target_subject_data
+from bci.Utils.bci_config import load_config
 
 
 def replay_data_as_lsl(
@@ -126,7 +126,7 @@ if __name__ == "__main__":
         label = events[0][i][2]
         labels[start_sample:end_sample] = label
 
-    print(labels)
+    print(np.unique(labels))
     print(f"EEG data shape: {eeg_data.shape}, Labels shape: {labels.shape}")
 
     # Replay the data and labels as LSL streams

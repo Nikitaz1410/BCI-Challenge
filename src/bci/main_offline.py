@@ -11,9 +11,6 @@ from sklearn.model_selection import GroupKFold
 # Evaluation
 from bci.Evaluation.metrics import MetricsTable, compile_metrics
 
-# Utils
-from bci.Loading.bci_config import load_config
-
 # Data Acquisition
 from bci.Loading.loading import load_physionet_data, load_target_subject_data
 from bci.Preprocessing.artefact_removal import ArtefactRemoval
@@ -23,6 +20,9 @@ from bci.Preprocessing.filters import (
     Filter,
 )
 from bci.Preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
+
+# Utils
+from bci.Utils.bci_config import load_config
 from bci.Utils.utils import (
     choose_model,
 )  # Constructs the model of your choosing (can be easily extended)
