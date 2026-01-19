@@ -149,8 +149,6 @@ def _get_raw_xdf_offline(
         else:
             event_channel = i  # markers stream
 
-    # print(streams[eeg_channel]["info"])
-
     # Validate channel information:
     if streams[eeg_channel]["info"]["desc"] != [None]:
         print("Channel info found in the recording.")
@@ -166,6 +164,12 @@ def _get_raw_xdf_offline(
         print("No channel info found in the recording.")
         # No channel info available - use predefined channel labels
         channel_labels = expected_channel_labels
+
+        print(streams[eeg_channel]["info"]["channel_count"])
+
+        if streams[eeg_channel]["info"]["channel_count"][0] == "16":
+            # Cut the last channel
+            channel_labels = expected_channel_labels[:-1]
 
     # Create montage object - this is needed for the raw data object (Layout of the electrodes)
     montage = mne.channels.make_standard_montage("standard_1020")
