@@ -45,6 +45,7 @@ class BCIController:
             print("Error when closing the socket!")
 
     def _connect_to_marker_stream(self):
+        # MyDinoGameMarkerStream
         pass
 
     def _build_prediction(self, label: str, marker: str) -> bytes:
