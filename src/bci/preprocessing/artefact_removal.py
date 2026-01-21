@@ -78,20 +78,53 @@ class ArtefactRemoval:
         print(f"\n🔍 Computing Artifact Rejection Thresholds:")
         print(f"   Input: {n_epochs} epochs, {n_channels} channels, {n_times} time points")
 
+        # Detect data units: check if data is in Volts (typical MNE: <1V) or μV
+        sample_max = np.max(np.abs(epoch_data))
+        data_in_volts = sample_max < 1.0  # If max < 1, likely in Volts
+        
+        if data_in_volts:
+            unit_factor = 1e6  # Convert Volts to μV for display
+            unit_name = "Volts"
+            display_unit = "μV"
+        else:
+            unit_factor = 1.0  # Already in μV
+            unit_name = "μV"
+            display_unit = "μV"
+
         # 1. AMPLITUDE REJECTION (max absolute amplitude)
         if self.use_amplitude:
             # Max amplitude per epoch (max across all channels and time)
             max_amplitudes = np.max(np.abs(epoch_data), axis=(1, 2))  # (n_epochs,)
-            self.amplitude_threshold = (
-                np.percentile(max_amplitudes, percentile) * self.threshold_multiplier
-            )
+            
+            # Use standard EEG thresholds if percentile gives unrealistic values
+            # Typical EEG: 10-100 μV normal, >200 μV artifacts
+            percentile_val = np.percentile(max_amplitudes, percentile)
+            
+            # If percentile is very small and data is in Volts, use standard threshold
+            if data_in_volts and percentile_val < 0.00005:  # < 50 μV
+                # Use standard 200 μV threshold for artifacts (0.0002 Volts)
+                standard_threshold = 200e-6  # 200 μV in Volts
+                self.amplitude_threshold = standard_threshold * self.threshold_multiplier
+                print(
+                    f"   ✓ Amplitude threshold: Using standard EEG threshold "
+                    f"(200 {display_unit} base)"
+                )
+            else:
+                self.amplitude_threshold = (
+                    percentile_val * self.threshold_multiplier
+                )
+            
             print(
                 f"   ✓ Amplitude threshold ({percentile}th percentile): "
-                f"{np.percentile(max_amplitudes, percentile):.2f} μV"
+                f"{percentile_val * unit_factor:.2f} {display_unit}"
             )
             print(
                 f"      After multiplier ({self.threshold_multiplier}x): "
-                f"{self.amplitude_threshold:.2f} μV"
+                f"{self.amplitude_threshold * unit_factor:.2f} {display_unit}"
+            )
+            print(
+                f"      Data range: {np.min(max_amplitudes) * unit_factor:.2f} - "
+                f"{np.max(max_amplitudes) * unit_factor:.2f} {display_unit}"
             )
 
         # 2. VARIANCE REJECTION (high variance = movement/muscle artifacts)
@@ -121,16 +154,28 @@ class ArtefactRemoval:
                 max_grad = np.max(np.abs(grad))  # Max gradient magnitude
                 gradients.append(max_grad)
             gradients = np.array(gradients)
-            self.gradient_threshold = (
-                np.percentile(gradients, percentile) * self.threshold_multiplier
-            )
+            percentile_val = np.percentile(gradients, percentile)
+            
+            # Use standard gradient threshold if percentile is too low
+            # Typical: 50-100 μV/sample for artifacts
+            if data_in_volts and percentile_val < 0.00005:  # < 50 μV/sample
+                standard_threshold = 100e-6  # 100 μV/sample in Volts
+                self.gradient_threshold = standard_threshold * self.threshold_multiplier
+                print(
+                    f"   ✓ Gradient threshold: Using standard (100 {display_unit}/sample base)"
+                )
+            else:
+                self.gradient_threshold = (
+                    percentile_val * self.threshold_multiplier
+                )
+            
             print(
                 f"   ✓ Gradient threshold ({percentile}th percentile): "
-                f"{np.percentile(gradients, percentile):.4f} μV/sample"
+                f"{percentile_val * unit_factor:.4f} {display_unit}/sample"
             )
             print(
                 f"      After multiplier ({self.threshold_multiplier}x): "
-                f"{self.gradient_threshold:.4f} μV/sample"
+                f"{self.gradient_threshold * unit_factor:.4f} {display_unit}/sample"
             )
 
         # 4. CONSISTENCY REJECTION (isolated bad channels)
