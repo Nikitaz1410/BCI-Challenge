@@ -6,7 +6,6 @@ import os
 import time
 import torch
 import random
-from pytorch_lightning.loggers import TensorBoardLogger
 
 from .models import convolution_AE         
 from .properties import hyper_params as params
