@@ -60,7 +60,7 @@ warnings.filterwarnings("ignore")
 
 
 def _get_raw_xdf_offline(
-    trial: Path, marker_durations: list[float] | None = None
+    trial: Path, config: EEGConfig, marker_durations: list[float] | None = None
 ) -> tuple[mne.io.RawArray, list, list[str]]:
     """
     Function to load the raw data from the trial and return the raw data object,
@@ -95,26 +95,26 @@ def _get_raw_xdf_offline(
     """
     import pyxdf
 
-    # Define channel labels
-    expected_channel_labels = [
-        "Fp1",
-        "Fp2",
-        "F3",
-        "Fz",
-        "F4",
-        "T7",
-        "C3",
-        "Cz",
-        "C4",
-        "T8",
-        "P3",
-        "Pz",
-        "P4",
-        "PO7",
-        "PO8",
-        "Oz",
-        "Keyboard",  # We need to take into consideration extra labels
-    ]  # Manually set for g.Nautilus, standard 10-20 montage
+    # # Define channel labels
+    # expected_channel_labels = [
+    #     'Fp1', 
+    #     'Fp2', 
+    #     'T8', 
+    #     'F4', 
+    #     'Fz', 
+    #     'F3', 
+    #     'T7', 
+    #     'C4', 
+    #     'Cz', 
+    #     'C3', 
+    #     'P4', 
+    #     'Pz', 
+    #     'P3', 
+    #     'PO8', 
+    #     'Oz', 
+    #     'PO7', 
+    #     "Keyboard"  # We need to take into consideration extra labels
+    # ]  # Manually set for g.Nautilus, standard 10-20 montage (Subject P999)
 
     # Load the data
     if marker_durations is None:
@@ -157,19 +157,19 @@ def _get_raw_xdf_offline(
         eeg_channels = [channel["label"][0] for channel in channel_dict]
 
         # Check if channels match expected labels
-        if eeg_channels != expected_channel_labels:
+        if eeg_channels != config.channels:
             # Channel info exists but doesn't match - filter out this recording
             return None, None, None
     else:
         print("No channel info found in the recording.")
         # No channel info available - use predefined channel labels
-        channel_labels = expected_channel_labels
+        channel_labels = config.channels
 
         print(streams[eeg_channel]["info"]["channel_count"])
 
         if streams[eeg_channel]["info"]["channel_count"][0] == "16":
             # Cut the last channel
-            channel_labels = expected_channel_labels[:-1]
+            channel_labels = config.channels #[:-1]
 
     # Create montage object - this is needed for the raw data object (Layout of the electrodes)
     montage = mne.channels.make_standard_montage("standard_1020")
@@ -245,9 +245,9 @@ def _standardize_and_map(raw, target_event_id, mode="arrow"):
         raw: MNE Raw object.
         target_event_id: The final integer mapping,
         {
-            "rest": 1,
-            "left_hand": 2,
-            "right_hand": 3
+            "rest": 0,
+            "left_hand": 1,
+            "right_hand": 2
         }
         mode: "arrow" or "dino"
 
@@ -331,20 +331,12 @@ def load_physionet_data(subjects: list[int], root: Path, config: EEGConfig) -> t
         remove = [88, 92, 100]
         target_subjects = [x for x in dataset.subject_list if x not in remove]
 
-        event_dict = dataset.events
+        # event_dict = dataset.events (other integers: 1, 2, 3)
         event_id = {
-            "rest": event_dict["rest"],
-            "left_hand": event_dict["left_hand"],
-            "right_hand": event_dict["right_hand"],
+            "rest": 0,
+            "left_hand": 1,
+            "right_hand": 2,
         }
-
-        """ The event id dict is:
-        event_id = {
-            "rest": 1,
-            "left_hand": 2,
-            "right_hand": 3
-        }
-        """
 
         # Save event_id mapping
         with open(event_id_path, "w") as f:
@@ -493,9 +485,9 @@ def load_target_subject_data(
     loaded_raws, loaded_events, selected_event_id = [], [], {}
 
     target_event_id = {
-        "rest": 1,
-        "left_hand": 2,
-        "right_hand": 3,
+        "rest": 0,
+        "left_hand": 1,
+        "right_hand": 2,
     }  # Same as the Physionet event_id mapping
 
     channels = config.channels
@@ -503,7 +495,7 @@ def load_target_subject_data(
     # --- STEP 3: PROCESS XDF AND INFER EVENT_ID ---
     for file_path in selected_files:
         print(f"Processing XDF: {file_path.name}")
-        raw, markers, channel_labels = _get_raw_xdf_offline(file_path)
+        raw, markers, channel_labels = _get_raw_xdf_offline(file_path, config=config)
 
         if raw is None:
             continue
@@ -621,3 +613,47 @@ for train_idx, test_idx in gkf.split(X, y, groups=groups):
     print(f"Train subjects: {np.unique(groups[train_idx])}, Test subjects: {np.unique(groups[test_idx])}")
 
 """
+
+import matplotlib.pyplot as plt
+def visualize_filtering_effects(raw_original, raw_filtered):
+    """
+    Plots the time-series and PSD of EEG data before and after filtering.
+    """
+    # 1. Create a copy to keep the original intact
+    # raw_filtered = raw_original.copy()
+    
+    # 2. Apply your pipeline filters
+    # Check if these match your competition config!
+    fmin, fmax = 8.0, 30.0
+    # raw_filtered.filter(l_freq=fmin, h_freq=fmax, fir_design='firwin')
+    
+    # 3. Setup the visualization (Focusing on Central channels C3, Cz, C4)
+    # This helps see if the Mu-rhythm is preserved
+    picks = mne.pick_channels(raw_original.ch_names, 
+                              ['C3', 'Cz', 'C4'], 
+                              ordered=True)
+    
+    # 4. Plot PSD (Power Spectral Density)
+    # This is the most important plot to see if the 50Hz noise is gone
+    # and if the 8-30Hz brain activity is still there.
+    fig, ax = plt.subplots(2, 1, figsize=(10, 8))
+    
+    raw_original.compute_psd(fmax=60).plot(axes=ax[0], picks=picks, show=False)
+    ax[0].set_title("PSD Before Filtering (Raw)")
+    
+    raw_filtered.compute_psd(fmax=60).plot(axes=ax[1], picks=picks, show=False)
+    ax[1].set_title(f"PSD After Filtering ({fmin}-{fmax} Hz)")
+    
+    plt.tight_layout()
+    plt.savefig("filtering_effects_psd.png")
+    plt.show()
+
+    # 5. Plot Time Series (looking for scaling issues)
+    # If the signal looks like a flat line after filtering, your scaling is wrong.
+    raw_original.plot(n_channels=5, duration=5, title="Time Series: Raw", scalings='auto')
+    plt.savefig("raw_original.png")
+    raw_filtered.plot(n_channels=5, duration=5, title="Time Series: Filtered", scalings='auto')
+    plt.savefig("filtering_effects_psd.png")
+
+# Example usage:
+# visualize_filtering_effects(your_raw_object)
