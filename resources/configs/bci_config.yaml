@@ -8,24 +8,42 @@ frequencies:
   - 30.0
 order: 4
 
-# EEG Hardware/Channel setup
+# EEG Hardware/Channel setup: only valid for Physionet and P999
 channels:
   - "Fp1"
   - "Fp2"
-  - "T8"
-  - "F4"
-  - "Fz"
   - "F3"
+  - "Fz"
+  - "F4"
   - "T7"
-  - "C4"
-  - "Cz"
   - "C3"
-  - "P4"
-  - "Pz"
+  - "Cz"
+  - "C4"
+  - "T8"
   - "P3"
+  - "Pz"
+  - "P4" 
+  - "PO7"
   - "PO8"
   - "Oz"
-  - "PO7"
+  
+  # Channels for P554 (non-standard)
+  # - "Fp1"
+  # - "Fp2"
+  # - "T8"
+  # - "F4"
+  # - "Fz"
+  # - "F3"
+  # - "T7"
+  # - "C4"
+  # - "Cz"
+  # - "C3"
+  # - "P4"
+  # - "Pz"
+  # - "P3"
+  # - "PO8"
+  # - "Oz"
+  # - "PO7"
 
 remove_channels: # Optional - Maybe for the future
   - "Fp1"
