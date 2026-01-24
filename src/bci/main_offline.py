@@ -48,9 +48,7 @@ if __name__ == "__main__":
     # Initialize variables
     np.random.seed(config.random_state)
     metrics_table = MetricsTable()
-    model_args = {
-        "cov_est": "lwf"
-    }  # args for the model chooser (what the model constructor needs)
+   
     gkf = None
     if config.n_folds < 2:
         print("No cross-validation will be performed.")
@@ -103,6 +101,8 @@ if __name__ == "__main__":
             preload=True,
             baseline=None,
         )
+
+        # TODO: Normalize the data
 
         # Attach metadata
         metadata = pd.DataFrame(
@@ -159,7 +159,7 @@ if __name__ == "__main__":
             X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
 
             # Train and evaluate the model within each fold
-            clf = choose_model(config.model, model_args)
+            clf = choose_model("riemann", {"cov_est": "lwf"})
             clf.fit(X_train_clean, y_train_clean)
 
             # Evaluate on validation fold
@@ -241,7 +241,7 @@ if __name__ == "__main__":
     )
 
     # Construct Final Model
-    clf = choose_model(config.model, model_args)
+    clf = choose_model("riemann", {"cov_est": "lwf"})
 
     # Train the final model on all clean training data
     print("\nTraining final model on all training data...")
