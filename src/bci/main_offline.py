@@ -17,7 +17,7 @@ from sklearn.model_selection import GroupKFold
 from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
-from bci.loading.loading import load_physionet_data, load_target_subject_data
+from bci.loading.loading import load_physionet_data, load_target_subject_data, create_subject_train_set, create_subject_test_set
 from bci.preprocessing.artefact_removal import ArtefactRemoval
 
 # Preprocessing
@@ -31,6 +31,8 @@ from bci.utils.bci_config import load_config
 from bci.utils.utils import (
     choose_model,
 )  # Constructs the model of your choosing (can be easily extended)
+
+from bci.tests.data_leakage import test_no_data_leakage, test_train_test_no_overlap
 
 if __name__ == "__main__":
     # Load the config file
@@ -60,36 +62,88 @@ if __name__ == "__main__":
     filter = Filter(config, online=False)
 
     test_data_source_path = (
-        current_wd / "data" / config.test
+        current_wd / "data" / "eeg" / config.target     
     )  # Path can be defined in config file
+    # NOTE: To load all target subject data, you need to have "sub" folder in both test_data_source_path with all subject data files 
 
     test_data_target_path = (
-        current_wd / "data" / "datasets" / config.test
+        current_wd / "data" / "datasets" / config.target
     )  # Path can be defined in config file
 
     use_test = True  # Whether to test on target subject data after CV
     timings = {}
 
-    # Load training data
-    x_raw_train, events_train, event_id_train, sub_ids_train = load_physionet_data(
-        subjects=config.subjects, root=current_wd, config=config
+    # Load training data from Physionet
+    x_raw_physionet_train, events_physionet_train, event_id_physionet_train, sub_ids_physionet_train, train_physionet_filenames = load_physionet_data(
+        subjects=config.subjects, 
+        root=current_wd, 
+        channels=config.channels
     )
-    print(f"Loaded {len(x_raw_train)} subjects from Physionet for training.")
+    print(f"Loaded {len(x_raw_physionet_train)} subjects from Physionet for training.")
 
-    # Load target subject data for testing
-    x_raw_test, events_test, event_id_test, sub_ids_test = load_target_subject_data(
+    # Load all target subject data
+    # NOTE: You can use either this output directly or use train/test creation functions below
+    all_target_raws, all_target_events, target_event_id, target_sub_ids, target_metadata = load_target_subject_data(
         root=current_wd,
         source_path=test_data_source_path,
-        target_path=test_data_target_path,
-        config=config,
-        task_type="",
-        limit=0,
+        target_path=test_data_target_path
+    )
+
+    print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
+   
+    ''' Target subject data after loading: 
+    Total number of P554 files available: 2
+    Total number of P999-general files available: 4
+    Total number of P999-dino files available: 13
+    '''
+
+    # Create training set from target subject data: Choose how many files of each type to include
+    x_raw_train, events_train, train_filenames, sub_ids_train, train_indices = create_subject_train_set(
+        config, 
+        all_target_raws, 
+        all_target_events, 
+        target_metadata["filenames"], 
+        num_p554=2, 
+        num_p999_general=4, 
+        num_p999_dino=9,
+        shuffle=True
+    )
+    print(f"Loaded {len(x_raw_train)} subjects from target subject sessions for training.")
+
+    # You can concatenate Physionet data with target subject data for training if desired
+    
+    # print(f"Training set composition including target subject data:")
+    # x_raw_train += x_raw_physionet_train
+    # events_train += events_physionet_train
+    # sub_ids_train += sub_ids_physionet_train
+    # train_filenames += train_physionet_filenames
+    # print("=== Training Dataset ===")
+    # print(f"Selected {len(x_raw_train)} files in total for training")
+    # print("Training files:", train_filenames)
+
+
+    # Create test set from target subject data: Exclude training indices
+    x_raw_test, events_test, test_filenames, sub_ids_test = create_subject_test_set(
+        config, 
+        all_target_raws, 
+        all_target_events, 
+        target_metadata["filenames"], 
+        exclude_indices=train_indices, 
+        num_p554=0, 
+        num_p999_general=0, 
+        num_p999_dino=4,
+        shuffle=False
     )
     print(f"Loaded {len(x_raw_test)} target subject sessions for testing.")
 
+    # Test for data leakage between train and test sets
+    test_train_test_no_overlap(train_filenames, test_filenames)
+
     # Training: Filter the data and create epochs with metadata for grouped CV
+    # NOTE: If you use Physionet + target subject -> subject-wise CV
+    #       If you use only target subject data -> file-wise CV
     all_epochs_list = []
-    for raw, events, sub_id in zip(x_raw_train, events_train, sub_ids_train):
+    for raw, events, sub_id, i in zip(x_raw_train, events_train, sub_ids_train, train_filenames):
         # Filter the data
         filtered_raw = filter.apply_filter_offline(raw)
 
@@ -97,7 +151,7 @@ if __name__ == "__main__":
         epochs = mne.Epochs(
             filtered_raw,
             events,
-            event_id=event_id_train,
+            event_id=target_event_id,
             tmin=0.5,
             tmax=4.0,
             preload=True,
@@ -108,9 +162,11 @@ if __name__ == "__main__":
         metadata = pd.DataFrame(
             {
                 "subject_id": [sub_id] * len(epochs),
+                "filename": [i] * len(epochs),  
                 "condition": epochs.events[:, 2],
-            }
+            }  
         )
+
         epochs.metadata = metadata
 
         all_epochs_list.append(epochs)
@@ -120,13 +176,16 @@ if __name__ == "__main__":
     X_train = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
     y_train = combined_epochs.events[:, 2]  # The labels (e.g., 1, 2, 3)
     groups = (
-        combined_epochs.metadata["subject_id"].values
+        combined_epochs.metadata["filename"].values  # metadata["subject_id"] for subject-wise CV
         if combined_epochs.metadata is not None
         else None
     )
 
     # Grouped K-Fold Cross-Validation
     if config.n_folds >= 2 and gkf is not None and groups is not None:
+
+        # test_no_data_leakage(combined_epochs, gkf, groups)
+
         cv_metrics_list = []  # To compute the mean metrics over folds
         for fold_idx, (train_idx, val_idx) in enumerate(
             gkf.split(X_train, y_train, groups=groups)
@@ -172,7 +231,7 @@ if __name__ == "__main__":
                 y_pred=fold_predictions,
                 y_prob=fold_probabilities,
                 timings=None,
-                n_classes=len(event_id_train),
+                n_classes=len(target_event_id),  
             )
 
             cv_metrics_list.append(fold_metrics)
@@ -262,7 +321,7 @@ if __name__ == "__main__":
             epochs = mne.Epochs(
                 filtered_raw,
                 events,
-                event_id=event_id_test,
+                event_id=target_event_id,  
                 tmin=0.5,
                 tmax=4.0,
                 preload=True,
@@ -312,7 +371,7 @@ if __name__ == "__main__":
                 / max(1, len(y_test_clean)),
                 "filter_latency": filter.get_filter_latency(),
             },
-            n_classes=len(event_id_train),
+            n_classes=len(target_event_id),  
         )
 
         # Add dataset label after computing metrics
