@@ -54,11 +54,11 @@ if __name__ == "__main__":
     filter = Filter(config, online=False)
 
     test_data_source_path = (
-        current_wd / "data" / config.test
+        current_wd / "data" / "sub-P999"
     )  # Path can be defined in config file
 
     test_data_target_path = (
-        current_wd / "data" / "datasets" / config.test
+        current_wd / "data" / "datasets" / "sub-P999"
     )  # Path can be defined in config file
 
     use_test = True  # Whether to test on target subject data after CV
@@ -75,7 +75,7 @@ if __name__ == "__main__":
         source_path=test_data_source_path,
         target_path=test_data_target_path,
         config=config,
-        task_type="arrow",
+        task_type="",
         limit=0,
     )
     print(f"Loaded {len(x_raw_test)} target subject sessions for testing.")

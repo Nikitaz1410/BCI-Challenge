@@ -57,84 +57,11 @@ class Filter:
 
         # In online mode, maintain filter state for each channel
         if online:
+            # TODO: Buffer overlap?? @Iustin
             # zi shape: (n_sections, 2)
             self.zi: np.ndarray = scipy.signal.sosfilt_zi(self.sos)
             # Expand to (n_channels, n_sections, 2)
             self.zi = np.tile(self.zi, (len(self.config.channels), 1, 1))
-
-    # TODO: Discuss with team what kind of filtering we want to use => Should we stick with what we did initially?
-    def filter_raw(
-        self,
-        raw: mne.io.BaseRaw,
-        fmin: float,
-        fmax: float,
-        reference: str = "M1_M2",
-        use_notch: bool = False,
-        notch_freq: float = 50.0,
-        notch_method: str = "spectrum_fit",
-    ) -> mne.io.BaseRaw:
-        """
-        Apply bandpass filtering and set reference to raw EEG data.
-
-        Parameters
-        ----------
-        raw : mne.io.BaseRaw
-            Raw EEG data object
-        fmin : float
-            Lower cutoff frequency (Hz). Typical: 1.0 (removes DC drift) or 6.0
-        fmax : float
-            Upper cutoff frequency (Hz). Typical: 30.0 or 35.0 (removes high-freq noise)
-        reference : str
-            Reference type: "M1_M2" (mastoid) or "average" (average reference)
-        use_notch : bool
-            Whether to apply notch filter for power line noise removal
-        notch_freq : float
-            Notch frequency: 50.0 (Europe) or 60.0 (US)
-        notch_method : str
-            Notch filter method: "spectrum_fit" (accurate) or "fir" (fast)
-
-        Returns
-        -------
-        raw_filtered : mne.io.BaseRaw
-            Filtered and referenced raw data
-
-        Notes
-        -----
-        - Uses minimal-phase filter (phase="minimum") for causal/online compatibility
-        - M1/M2 reference is standard for motor imagery
-        - Average reference can be used if all electrodes are good
-        """
-        raw = raw.copy()
-
-        # Optional: Notch filter for power line noise
-        if use_notch:
-            raw.notch_filter(freqs=[notch_freq], method=notch_method, verbose=False)
-
-        # Bandpass filter (minimal-phase for causal processing)
-        raw.filter(
-            l_freq=fmin,
-            h_freq=fmax,
-            phase="minimum",  # Causal filter (can be used online)
-            fir_design="firwin",
-            verbose=False,
-        )
-
-        # Set reference
-        if reference == "M1_M2":
-            # MNE expects a list of reference channels for set_eeg_reference
-            raw.set_eeg_reference(
-                ref_channels=["M1", "M2"], projection=False, verbose=False
-            )
-        elif reference == "average":
-            raw.set_eeg_reference(
-                ref_channels="average", projection=False, verbose=False
-            )
-        else:
-            raise ValueError(
-                f"Unknown reference type: {reference}. Use 'M1_M2' or 'average'"
-            )
-
-        return raw
 
     def apply_filter_offline(self, raw: mne.io.BaseRaw) -> mne.io.BaseRaw:
         """

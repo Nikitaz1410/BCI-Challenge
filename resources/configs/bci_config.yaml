@@ -26,25 +26,7 @@ channels:
   - "PO7"
   - "PO8"
   - "Oz"
-  
-# Channels for P554 (non-standard)
-# channels:
-  # - "Fp1"
-  # - "Fp2"
-  # - "T8"
-  # - "F4"
-  # - "Fz"
-  # - "F3"
-  # - "T7"
-  # - "C4"
-  # - "Cz"
-  # - "C3"
-  # - "P4"
-  # - "Pz"
-  # - "P3"
-  # - "PO8"
-  # - "Oz"
-  # - "PO7"
+
 
 remove_channels: # Optional - Maybe for the future
   - "Fp1"
@@ -58,7 +40,6 @@ subjects_ids: # Range if given 2 numbers | List if specific ids
   - 15
 
 n_folds: 3
-split: 0.8 # (Train-Test split)
 random_state: 42
 finetune: "sub-P544" # Options: sub-P999, sub-P544
 test: "sub-P544" # Options: sub-P999, sub-P544 
