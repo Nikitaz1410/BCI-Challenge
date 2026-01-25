@@ -26,6 +26,7 @@ class EEGConfig:
     random_state: int
     test: str
     finetune: str
+    target: str
 
     # Online Mode
     online: str
