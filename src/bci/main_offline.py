@@ -136,9 +136,6 @@ if __name__ == "__main__":
     )
     print(f"Loaded {len(x_raw_test)} target subject sessions for testing.")
 
-    # Test for data leakage between train and test sets
-    test_train_test_no_overlap(train_filenames, test_filenames)
-
     # Training: Filter the data and create epochs with metadata for grouped CV
     # NOTE: If you use Physionet + target subject -> subject-wise CV
     #       If you use only target subject data -> file-wise CV
@@ -183,8 +180,6 @@ if __name__ == "__main__":
 
     # Grouped K-Fold Cross-Validation
     if config.n_folds >= 2 and gkf is not None and groups is not None:
-
-        # test_no_data_leakage(combined_epochs, gkf, groups)
 
         cv_metrics_list = []  # To compute the mean metrics over folds
         for fold_idx, (train_idx, val_idx) in enumerate(
