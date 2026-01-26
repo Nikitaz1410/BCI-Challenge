@@ -11,7 +11,7 @@ import time
 import numpy as np
 import pygame
 
-from bci.Game.helper import *
+from bci.game.helper import *
 
 
 # Global Constants

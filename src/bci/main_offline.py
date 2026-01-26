@@ -12,6 +12,7 @@ import mne
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold
+from sklearn.preprocessing import StandardScaler
 
 # Evaluation
 from bci.evaluation.metrics import MetricsTable, compile_metrics
@@ -58,6 +59,14 @@ if __name__ == "__main__":
         gkf = GroupKFold(n_splits=config.n_folds)  # Cross-Validation splitter
 
     filter = Filter(config, online=False)
+
+    fine_tune_data_source_path = (
+        current_wd / "data" / config.test
+    )  # Path can be defined in config file
+
+    fine_tune_data_target_path = (
+        current_wd / "data" / "datasets" / config.test
+    )  # Path can be defined in config file
 
     test_data_source_path = (
         current_wd / "data" / "eeg" / config.target     
@@ -166,6 +175,16 @@ if __name__ == "__main__":
 
         epochs.metadata = metadata
 
+        # Normalize the epochs data
+        """
+        scaler = StandardScaler()
+        n_epochs, n_channels, n_times = epochs.get_data().shape
+        epochs_data = epochs.get_data().reshape(n_epochs * n_channels, n_times)
+        epochs_data = scaler.fit_transform(epochs_data)
+        epochs_data = epochs_data.reshape(n_epochs, n_channels, n_times)
+        epochs._data = epochs_data
+        """
+
         all_epochs_list.append(epochs)
 
     # Prepare Epochs with Metadata for Grouped CV
@@ -177,6 +196,14 @@ if __name__ == "__main__":
         if combined_epochs.metadata is not None
         else None
     )
+
+    # Extra Step, to make sure the classes are changed from
+    # 1 - Rest, 2 - Left Hand MI, 3 - Right Hand MI
+    # to
+    # 0 - Rest, 1 - Left Hand MI, 2 - Right Hand MI
+
+    for i in range(y_train.shape[0]):
+        y_train[i] -= 1
 
     # Grouped K-Fold Cross-Validation
     if config.n_folds >= 2 and gkf is not None and groups is not None:
@@ -204,6 +231,7 @@ if __name__ == "__main__":
             )
 
             # Remove artifacts within each fold
+            """
             ar = ArtefactRemoval()
             ar.get_rejection_thresholds(X_train_fold, config)
 
@@ -211,6 +239,9 @@ if __name__ == "__main__":
                 X_train_fold, y_train_fold
             )
             X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
+            """
+            X_train_clean, y_train_clean = X_train_fold, y_train_fold
+            X_val_clean, y_val_clean = X_val_fold, y_val_fold
 
             # Train and evaluate the model within each fold
             clf = choose_model("riemann", {"cov_est": "lwf"})
@@ -282,17 +313,22 @@ if __name__ == "__main__":
     # Results on Holdout
 
     # Extract the windowed epochs
-    X_train_windows, y_train_windows = epochs_to_windows(
+    X_train_windows, y_train_windows, train_groups_windows = epochs_to_windows(
         combined_epochs,
+        groups,
         window_size=config.window_size,
         step_size=config.step_size,
     )
 
+    """
     ar = ArtefactRemoval()
     ar.get_rejection_thresholds(X_train_windows, config)
     X_train_clean, y_train_clean = ar.reject_bad_epochs(
         X_train_windows, y_train_windows
     )
+    """
+
+    X_train_clean, y_train_clean = X_train_windows, y_train_windows
 
     # Construct Final Model
     clf = choose_model("riemann", {"cov_est": "lwf"})
@@ -300,7 +336,8 @@ if __name__ == "__main__":
     # Train the final model on all clean training data
     print("\nTraining final model on all training data...")
     start_train_time = time.time() * 1000
-    clf.fit(X_train_clean, y_train_clean)
+    clf.fit_centered(X_train_clean, y_train_clean, train_groups_windows)
+    # clf.fit(X_train_clean, y_train_clean)
     end_train_time = time.time() * 1000
 
     # Test on the holdout test set
@@ -318,13 +355,12 @@ if __name__ == "__main__":
                 events,
                 event_id=target_event_id,  
                 tmin=0.5,
-                tmax=4.0,
+                tmax=3.0,
                 preload=True,
                 baseline=None,
             )
 
             # TODO: Should we attach metadata?
-
             all_test_epochs_list.append(epochs)
 
         combined_test_epochs = mne.concatenate_epochs(all_test_epochs_list)
@@ -332,16 +368,30 @@ if __name__ == "__main__":
         test_labels = combined_test_epochs.events[:, 2]
 
         # Extract windowed epochs for testing
-        X_test_windows, y_test_windows = epochs_to_windows(
+        X_test_windows, y_test_windows, _ = epochs_to_windows(
             combined_test_epochs,
+            test_labels,  # Optional in this case
             window_size=config.window_size,
             step_size=config.step_size,
         )
 
         # Also clean test data using the same thresholds
+        """
         X_test_clean, y_test_clean = ar.reject_bad_epochs(
             X_test_windows, y_test_windows
         )
+        """
+        X_test_clean, y_test_clean = X_test_windows, y_test_windows
+
+        print(np.unique(y_test_clean))
+
+        # Extra Step, to make sure the classes are changed from
+        # 1 - Rest, 2 - Left Hand MI, 3 - Right Hand MI
+        # to
+        # 0 - Rest, 1 - Left Hand MI, 2 - Right Hand MI
+
+        for i in range(y_test_clean.shape[0]):
+            y_test_clean[i] -= 1
 
         # Evaluate on holdout test set
         print("Evaluating on holdout test set...")
@@ -386,5 +436,6 @@ if __name__ == "__main__":
     # Save the Artefact Removal Object
     ar_path = Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
     with open(ar_path, "wb") as f:
-        pickle.dump(ar, f)
+        if ar:
+            pickle.dump(ar, f)
     print(f"Artefact Removal object saved to: {ar_path}")

@@ -1,12 +1,14 @@
 # Signal processing parameters
-window_size: 250
+window_size: 160
 step_size: 32
 fs: 160.0
 
 frequencies:
-  - 8.0
-  - 30.0
-order: 4
+  - 8
+  - 30
+order: 8
+
+artefact_removal: "asr" # Options: ar (Artefact Rejection), asr (Artefact Subspace Reconstruction)
 
 # EEG Hardware/Channel setup: only valid for Physionet and P999
 channels:

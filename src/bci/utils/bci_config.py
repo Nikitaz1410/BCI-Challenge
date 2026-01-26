@@ -14,6 +14,7 @@ class EEGConfig:
     fs: float
     frequencies: List[float]
     order: int
+    artefact_removal: str
 
     # EEG Hardware/Channel setup
     channels: List[str]

@@ -623,6 +623,20 @@ def load_target_subject_data(
     return loaded_raws, loaded_events, selected_event_id, [110] * len(loaded_raws), loaded_meta
 
 
+<<<<<<< Updated upstream
+=======
+def load_fina_baseline():
+    pass
+
+
+def load_physionet_baseline():
+    pass
+
+
+# NOTE: The following is an example of how to use the loaded data for you guys as a reference
+# on how the data could be processed further.
+# TODO: Needs to be removed from the final version.
+>>>>>>> Stashed changes
 
 def create_subject_train_set(
     config: EEGConfig,
