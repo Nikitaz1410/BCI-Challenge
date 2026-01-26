@@ -20,10 +20,8 @@ class EEGConfig:
     channels: List[str]
 
     # Data and Classification parameters
-    model: str
     subjects_ids: List[int]
     n_folds: int
-    split: float
     random_state: int
     test: str
     finetune: str
