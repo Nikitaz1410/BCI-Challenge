@@ -61,7 +61,7 @@ warnings.filterwarnings("ignore")
 
 
 def _get_raw_xdf_offline(
-    trial: Path, marker_durations: list[float] | None = None
+    trial: Path, marker_durations: list[float] | None = None, 
 ) -> tuple[mne.io.RawArray, list, list[str]]:
     """
     Function to load the raw data from the trial and return the raw data object,
@@ -489,7 +489,7 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
     return loaded_raws, loaded_events, event_id, subject_ids_out, raw_filenames
 
 
-def load_target_subject_data(root: Path, source_path: Path, target_path: Path) -> tuple:
+def load_target_subject_data(root: Path, source_path: Path, target_path: Path, resample: bool) -> tuple:
     """
     Loads target data (Subject 110).
     1. Checks target_path for existing .fif files.
@@ -551,6 +551,14 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path) -
         loaded_events = []
         for fif_p in existing_fif:
             raw = mne.io.read_raw_fif(fif_p, preload=True)
+            if resample:
+                sfreq = raw.info["sfreq"]
+                print(f"  Original sampling rate: {sfreq} Hz")
+                if sfreq != 160:
+                    print(f"  Resampling to 160 Hz...")
+                    raw.resample(160)
+            else:
+                pass
             # Find corresponding event file
             npy_p = event_save_dir / f"{fif_p.stem.replace('_raw', '')}_events.npy"
             evs = np.load(npy_p)
@@ -608,17 +616,7 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path) -
             print("raw is None, skipping the file.")
             continue
         # TODO: new check
-        sfreq = raw.info["sfreq"]
-        print(f"  Original sampling rate: {sfreq} Hz")
-
-        if abs(sfreq - 160) > 1:
-            print(f"  Resampling to 160 Hz...")
-            raw.resample(160)
-        else:
-            print(f"  Sampling rate already 160 Hz, skipping resample")
-
-        # raw.resample(160)
-
+        
         task_mode = "dino" if "dino" in file_path.name.lower() else "general"
         # Standardize and map using the specific mode
         selected_events = _standardize_and_map(raw, target_event_id, mode=task_mode)
@@ -923,7 +921,7 @@ def create_subject_test_set(
         test_sub_ids
     )
 
-
+# TODO: delete in final version 
 # def load_cho2017_data(subjects: list[int], root: Path, channels: list[str]) -> tuple:
 #     """Load Physionet Motor Imagery data for specified subjects.
 

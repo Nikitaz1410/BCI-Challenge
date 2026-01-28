@@ -115,6 +115,7 @@ def epochs_to_windows(
 
 def epochs_windows_from_fold(
     epochs,
+    groups,
     train_idx: np.ndarray,
     val_idx: np.ndarray,
     window_size: int = 250,
@@ -154,11 +155,11 @@ def epochs_windows_from_fold(
     epochs_val = epochs[val_idx]
 
     # Convert epochs -> windows
-    X_train, y_train = epochs_to_windows(
-        epochs_train, window_size=window_size, step_size=step_size
+    X_train, y_train, _ = epochs_to_windows(
+        epochs_train, groups, window_size=window_size, step_size=step_size
     )
-    X_val, y_val = epochs_to_windows(
-        epochs_val, window_size=window_size, step_size=step_size
+    X_val, y_val, _ = epochs_to_windows(
+        epochs_val, groups, window_size=window_size, step_size=step_size
     )
 
     # Build trial id arrays mapping each window back to original epoch index

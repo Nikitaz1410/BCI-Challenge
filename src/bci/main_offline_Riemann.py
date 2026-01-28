@@ -91,7 +91,8 @@ if __name__ == "__main__":
     all_target_raws, all_target_events, target_event_id, target_sub_ids, target_metadata = load_target_subject_data(
         root=current_wd,
         source_path=test_data_source_path,
-        target_path=test_data_target_path
+        target_path=test_data_target_path,
+        resample=False
     )
 
     print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
@@ -213,6 +214,7 @@ if __name__ == "__main__":
             # Epoch the data into windows
             fold_windowed_epochs = epochs_windows_from_fold(
                 combined_epochs,
+                groups, 
                 train_idx,
                 val_idx,
                 window_size=config.window_size,
@@ -229,7 +231,7 @@ if __name__ == "__main__":
             )
 
             # Remove artifacts within each fold
-            """
+            
             ar = ArtefactRemoval()
             ar.get_rejection_thresholds(X_train_fold, config)
 
@@ -237,9 +239,9 @@ if __name__ == "__main__":
                 X_train_fold, y_train_fold
             )
             X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
-            """
-            X_train_clean, y_train_clean = X_train_fold, y_train_fold
-            X_val_clean, y_val_clean = X_val_fold, y_val_fold
+            
+            # X_train_clean, y_train_clean = X_train_fold, y_train_fold
+            # X_val_clean, y_val_clean = X_val_fold, y_val_fold
 
             # Train and evaluate the model within each fold
             clf = choose_model("riemann", {"cov_est": "lwf"})
