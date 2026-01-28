@@ -28,7 +28,7 @@ import pygame
 # =============================================================================
 # Local modules
 # =============================================================================
-from bci.Game.helper.dinosaur import (
+from bci.game.helper.dinosaur import (
     Bird,
     Cloud,
     DecayingBar,
@@ -38,8 +38,8 @@ from bci.Game.helper.dinosaur import (
     SmallCactus,
     Task,
 )
-from bci.Game.helper.lsl_markerstream import LSLMarkerStream
-from bci.Game.helpers import (
+from bci.game.helper.lsl_markerstream import LSLMarkerStream
+from bci.game.helpers import (
     config,
     configure_udp_endpoint,
     get_current_marker,

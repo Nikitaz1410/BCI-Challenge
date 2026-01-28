@@ -14,15 +14,14 @@ class EEGConfig:
     fs: float
     frequencies: List[float]
     order: int
+    artefact_removal: str
 
     # EEG Hardware/Channel setup
     channels: List[str]
 
     # Data and Classification parameters
-    model: str
     subjects_ids: List[int]
     n_folds: int
-    split: float
     random_state: int
     test: str
     finetune: str

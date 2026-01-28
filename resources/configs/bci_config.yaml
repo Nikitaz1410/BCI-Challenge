@@ -1,12 +1,14 @@
 # Signal processing parameters
 window_size: 250
 step_size: 32
-fs: 160.0
+fs: 250
 
 frequencies:
-  - 8.0
-  - 30.0
-order: 4
+  - 8
+  - 30
+order: 8
+
+artefact_removal: "asr" # Options: ar (Artefact Rejection), asr (Artefact Subspace Reconstruction)
 
 # EEG Hardware/Channel setup: only valid for Physionet and P999
 channels:
@@ -22,18 +24,14 @@ channels:
   - "T8"
   - "P3"
   - "Pz"
-  - "P4" 
+  - "P4"
   - "PO7"
   - "PO8"
   - "Oz"
 
-
 remove_channels: # Optional - Maybe for the future
   - "Fp1"
   - "Fp2"
-
-# Data and Classification parameters
-model: "Riemann" # Options: CSPSVM, SAE, MIRepNet, Riemann
 
 subjects_ids: # Range if given 2 numbers | List if specific ids
   - 1
@@ -42,7 +40,7 @@ subjects_ids: # Range if given 2 numbers | List if specific ids
 n_folds: 3
 random_state: 42
 finetune: "sub-P544" # Options: sub-P999, sub-P544
-test: "sub-P544" # Options: sub-P999, sub-P544 
+test: "sub-P544" # Options: sub-P999, sub-P544
 target: "sub" # Folder name with all target subject data
 
 # Online

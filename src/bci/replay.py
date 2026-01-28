@@ -87,24 +87,28 @@ if __name__ == "__main__":
 
     if "Phy" in config.replay_subject_id:
         s_id = int(config.replay_subject_id.split("-")[1])
-        # Load training data
-        raw, events, event_id, sub_ids = load_physionet_data(
-            subjects=[s_id], root=current_wd, config=config
+        # Load training data from Physionet
+        raw, events, event_id, sub_ids, train_physionet_filenames = load_physionet_data(
+            subjects=[s_id], root=current_wd, channels=config.channels
         )
+
         print(f"Loaded subject {s_id} from Physionet for training.")
     else:
         # Load target subject data for testing
-        test_data_path = (
-            current_wd / "data" / config.replay_subject_id
+        test_data_source_path = (
+            current_wd / "data" / "eeg" / config.replay_subject_id
         )  # Path can be defined in config file
+        # NOTE: To load all target subject data, you need to have "sub" folder in both test_data_source_path with all subject data files
+
+        test_data_target_path = (
+            current_wd / "data" / "datasets" / config.replay_subject_id
+        )  # Path can be defined in config file
+
         raw, events, event_id, sub_ids = load_target_subject_data(
             root=current_wd,
-            source_path=test_data_path,
-            config=config,
-            task_type="arrow",
-            limit=0,
+            source_path=test_data_source_path,
+            target_path=test_data_target_path,
         )
-        print(f"Loaded {len(raw)} target subject sessions for testing.")
 
     # Extract EEG data and labels
     # TODO: Handle multiple sessions if needed -> For now only one is considered

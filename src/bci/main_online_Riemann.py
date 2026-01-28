@@ -43,7 +43,7 @@ if __name__ == "__main__":
     )
 
     filter = Filter(config, online=True)
-    ar = pickle.load(open(artefact_rejection_path, "rb"))
+    # ar = pickle.load(open(artefact_rejection_path, "rb"))
     model_args = {
         "cov_est": "lwf"
     }  # args for the model chooser (what the model constructor needs)
@@ -68,11 +68,13 @@ if __name__ == "__main__":
     probability_threshold = 0.6  # threshold for accepting a prediction
 
     markers = {
-        0: "unknown",
-        1: "rest",
-        2: "left_hand",
-        3: "right_hand",
+        -1: "unknown",
+        0: "rest",
+        1: "left_hand",
+        2: "right_hand",
     }
+
+    cmd_map = {"CIRCLE ONSET": 0, "ARROW LEFT ONSET": 1, "ARROW RIGHT ONSET": 2}
 
     # Add stream finding logic based on mode
 
@@ -94,12 +96,17 @@ if __name__ == "__main__":
             s for s in streams if s.type() == "Markers" and s.name() == "Labels_Stream"
         ]
 
-    if not eeg_streams or not label_streams:
-        print("❌ Could not find EEG or Markers streams.")
-        sys.exit(1)
+    if not eeg_streams:
+        print("❌ Could not find EEG streams.")
+        inlet = None
+    else:
+        inlet = StreamInlet(eeg_streams[0], max_chunklen=32)
 
-    inlet = StreamInlet(eeg_streams[0], max_chunklen=32)
-    inlet_labels = StreamInlet(label_streams[0], max_chunklen=32)
+    if not label_streams:
+        print("❌ Could not find Markers streams.")
+        inlet_labels = None
+    else:
+        inlet_labels = StreamInlet(label_streams[0], max_chunklen=32)
 
     print("Starting to read data from the EEG stream...")
     print(f"Reading Labels from {label_streams[0].name()}")
@@ -130,23 +137,30 @@ if __name__ == "__main__":
 
                     n_new_labels = labels_chunk.shape[1]
 
+                    label_chunk = np.array(
+                        [cmd_map.get(l[0], -1) for l in labels_chunk]
+                    )
+
                     if n_new_labels >= config.window_size:
                         label_buffer = labels_chunk[:, -config.window_size :]
 
+                    print(f"Buffer: {label_buffer}")
+                    print(f"Chunk: {label_chunk}")
+
                     label_buffer[:, :-n_new_labels] = label_buffer[:, n_new_labels:]
-                    label_buffer[:, -n_new_labels:] = labels_chunk
+                    label_buffer[:, -n_new_labels:] = label_chunk
 
                 # Extract the current label (most present in the buffer)
                 # TODO: check this for the dino game -> Might need mapping
                 unique, counts = np.unique(label_buffer, return_counts=True)
                 if len(unique) > 0:
                     label_counts = dict(zip(unique, counts))
-                    crt_label = max(label_counts, key=lambda k: label_counts[k])
+                    crt_label = min(label_counts, key=lambda k: label_counts[k])
                     print(
                         f"Current label: {crt_label} - {markers.get(crt_label, 'unknown')}"
                     )
                 else:
-                    crt_label = 0  # fallback to unknown
+                    crt_label = -1  # fallback to unknown
 
                 # Filter the data
                 filtered_data = filter.apply_filter_online(buffer)
@@ -168,14 +182,15 @@ if __name__ == "__main__":
                     0
                 ]  # To account to the fact that the classifier was trained with labels 1,2,3
                 print(
-                    f"Predicted class: {prediction+1} - {markers.get(prediction+1, 'unknown')} with probability {probabilities[0][prediction]:.4f}"
+                    f"Predicted class: {prediction} - {markers.get(prediction, 'unknown')} with probability {probabilities[0][prediction]:.4f}"
                 )
                 total_predictions += 1
+
                 if probabilities[0][prediction] < probability_threshold:
                     total_rejected += 1
-                else:
-                    total_successes += int(prediction == crt_label)
-                    total_fails += int(prediction != crt_label)
+
+                total_successes += int(prediction == crt_label)
+                total_fails += int(prediction != crt_label)
 
                 number_of_classifications += 1
 
@@ -191,4 +206,11 @@ if __name__ == "__main__":
                 print(
                     f"Total Predictions: {total_predictions}, Rejected: {total_rejected},  Successes: {total_successes}, Fails: {total_fails}"
                 )
+
+                # Compute average accuracy
+                if total_predictions > 0:
+                    avg_accuracy = total_successes / total_predictions
+                    print(f"Average accuracy: {avg_accuracy:.4f}")
+                else:
+                    print("No predictions made yet.")
                 break

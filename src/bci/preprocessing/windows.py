@@ -66,8 +66,8 @@ def extract_overlapping_windows(
 
 
 def epochs_to_windows(
-    epochs: mne.Epochs, window_size: int = 250, step_size: int = 16
-) -> Tuple[np.ndarray, np.ndarray]:
+    epochs: mne.Epochs, groups: np.ndarray, window_size: int = 250, step_size: int = 16
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert MNE `Epochs` into overlapping windows and labels.
 
     Parameters
@@ -91,6 +91,7 @@ def epochs_to_windows(
 
     windowed_epochs = []
     windowed_labels = []
+    windowed_groups = []
 
     for i, eeg in enumerate(data):
         windows = extract_overlapping_windows(
@@ -100,14 +101,16 @@ def epochs_to_windows(
             continue
         windowed_epochs.append(windows)
         windowed_labels.extend([labels[i]] * windows.shape[0])
+        windowed_groups.extend([groups[i]] * windows.shape[0])
 
     if len(windowed_epochs) == 0:
         return np.zeros((0, data.shape[1], window_size)), np.array([], dtype=int)
 
     windowed_epochs = np.concatenate(windowed_epochs, axis=0)
     windowed_labels = np.array(windowed_labels)
+    windowed_groups = np.array(windowed_groups)
 
-    return windowed_epochs, windowed_labels
+    return windowed_epochs, windowed_labels, windowed_groups
 
 
 def epochs_windows_from_fold(

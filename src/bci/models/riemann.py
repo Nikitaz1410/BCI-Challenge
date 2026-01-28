@@ -6,6 +6,9 @@ from pyriemann.estimation import Covariances
 from pyriemann.utils.base import invsqrtm
 from pyriemann.utils.tangentspace import log_map_riemann, tangent_space
 from pyriemann.utils.test import is_sym_pos_def
+from pyriemann.utils.mean import mean_riemann
+from sklearn.externals._packaging.version import Optional
+from sklearn.externals.array_api_compat.numpy import bool_, sign
 
 
 # RiemannianClf: Classifier using Riemannian geometry for covariance matrices
@@ -31,6 +34,46 @@ class RiemannianClf:
         covs = self._extract_features(signals)
         # TODO: Add recentering? (Normalization)
         self.clf.fit(covs, y)
+
+    # Approach
+    # Create class centroids for each subject
+    # Optional: Recenter Data to Baseline (Inter-Subject Variability)
+    # Train the model on the class centroids
+    # Optional: Finetune to one of Fina's sessions (Recentering Formula, Geodesic Interpolation)
+    def fit_centered(self, signals, y, groups):
+        covs = self._extract_features(signals)
+        # TODO: Add recentering? (Normalization)
+
+        subjects = np.unique(groups)
+        classes = np.unique(y)
+
+        centroids = []
+
+        centroids_y = np.zeros((classes.shape[0] * subjects.shape[0]))
+
+        for cls_id, cls in enumerate(classes):
+            for subject_id, subject in enumerate(subjects):
+                # Compute the centroids of the class cls_id of subject subject_id
+                signal_idx = np.where((y == cls) & (groups == subject))[0]
+                subject_cls_covs = covs[signal_idx, :, :]
+                centroid = mean_riemann(subject_cls_covs)
+                if not is_sym_pos_def(centroid):
+                    print(f"Problem with Centroid of {cls}, {subject}!")
+                else:
+                    centroids.append(centroid)
+
+        for cls_id in range(classes.shape[0]):
+            centroids_y[
+                cls_id * subjects.shape[0] : (cls_id + 1) * subjects.shape[0]
+            ] = classes[cls_id]
+
+        # Fit the classifier based on the
+        centroids_X = np.array(centroids)
+
+        print(
+            f"Training on {centroids_X.shape} centroids with {centroids_y.shape} labels."
+        )
+        self.clf.fit(centroids_X, centroids_y)
 
     def predict(self, cov):
         """

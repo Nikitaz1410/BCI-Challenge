@@ -3,32 +3,36 @@ import sys
 import time
 from pathlib import Path
 
+# Add src directory to Python path to allow imports
+src_dir = Path(__file__).parent.parent
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
 import mne
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold
+from sklearn.preprocessing import StandardScaler
 
 # Evaluation
 from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
-from bci.loading.loading import load_physionet_data, load_target_subject_data
+from bci.loading.loading import load_physionet_data, load_target_subject_data, create_subject_train_set, create_subject_test_set
 from bci.preprocessing.artefact_removal import ArtefactRemoval
 
 # Preprocessing
-from bci.preprocessing.filters import Filter
+from bci.preprocessing.filters import (
+    Filter,
+)
 from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
-
-# Models
-from bci.models.CSP_Baseline import CSP_Model
 
 # Utils
 from bci.utils.bci_config import load_config
+from bci.utils.utils import (
+    choose_model,
+)  # Constructs the model of your choosing (can be easily extended)
 
-
-# =============================================================================
-# Main
-# =============================================================================
 if __name__ == "__main__":
     # Load the config file
     current_wd = Path.cwd()  # BCI-Challenge directory
@@ -39,12 +43,13 @@ if __name__ == "__main__":
         config = load_config(config_path)
         print("Configuration loaded successfully!")
     except Exception as e:
-        print(f"Error loading config: {e}")
+        print(f"❌ Error loading config: {e}")
         sys.exit(1)
 
     # Initialize variables
     np.random.seed(config.random_state)
     metrics_table = MetricsTable()
+   
     gkf = None
     if config.n_folds < 2:
         print("No cross-validation will be performed.")
@@ -53,36 +58,94 @@ if __name__ == "__main__":
 
     filter = Filter(config, online=False)
 
-    test_data_source_path = (
-        current_wd / "data" / "sub-P999"
+    fine_tune_data_source_path = (
+        current_wd / "data" / config.test
     )  # Path can be defined in config file
 
+    fine_tune_data_target_path = (
+        current_wd / "data" / "datasets" / config.test
+    )  # Path can be defined in config file
+
+    test_data_source_path = (
+        current_wd / "data" / "eeg" / config.target     
+    )  # Path can be defined in config file
+    # NOTE: To load all target subject data, you need to have "sub" folder in both test_data_source_path with all subject data files 
+
     test_data_target_path = (
-        current_wd / "data" / "datasets" / "sub-P999"
+        current_wd / "data" / "datasets" / config.target
     )  # Path can be defined in config file
 
     use_test = True  # Whether to test on target subject data after CV
+    timings = {}
 
     # Load training data from Physionet
-    x_raw_train, events_train, event_id_train, sub_ids_train = load_physionet_data(
-        subjects=config.subjects, root=current_wd, config=config
+    x_raw_physionet_train, events_physionet_train, event_id_physionet_train, sub_ids_physionet_train, train_physionet_filenames = load_physionet_data(
+        subjects=config.subjects, 
+        root=current_wd, 
+        channels=config.channels
     )
-    print(f"Loaded {len(x_raw_train)} subjects from Physionet for training.")
+    print(f"Loaded {len(x_raw_physionet_train)} subjects from Physionet for training.")
 
-    # Load target subject data for testing
-    x_raw_test, events_test, event_id_test, sub_ids_test = load_target_subject_data(
+    # Load all target subject data
+    # NOTE: You can use either this output directly or use train/test creation functions below
+    all_target_raws, all_target_events, target_event_id, target_sub_ids, target_metadata = load_target_subject_data(
         root=current_wd,
         source_path=test_data_source_path,
-        target_path=test_data_target_path,
-        config=config,
-        task_type="",
-        limit=0,
+        target_path=test_data_target_path
+    )
+
+    print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
+   
+    ''' Target subject data after loading: 
+    Total number of P554 files available: 2
+    Total number of P999-general files available: 4
+    Total number of P999-dino files available: 13
+    '''
+
+    # Create training set from target subject data: Choose how many files of each type to include
+    x_raw_train, events_train, train_filenames, sub_ids_train, train_indices = create_subject_train_set(
+        config, 
+        all_target_raws, 
+        all_target_events, 
+        target_metadata["filenames"], 
+        num_p554=2, 
+        num_p999_general=4, 
+        num_p999_dino=9,
+        shuffle=True
+    )
+    print(f"Loaded {len(x_raw_train)} subjects from target subject sessions for training.")
+
+    # You can concatenate Physionet data with target subject data for training if desired
+    
+    # print(f"Training set composition including target subject data:")
+    # x_raw_train += x_raw_physionet_train
+    # events_train += events_physionet_train
+    # sub_ids_train += sub_ids_physionet_train
+    # train_filenames += train_physionet_filenames
+    # print("=== Training Dataset ===")
+    # print(f"Selected {len(x_raw_train)} files in total for training")
+    # print("Training files:", train_filenames)
+
+
+    # Create test set from target subject data: Exclude training indices
+    x_raw_test, events_test, test_filenames, sub_ids_test = create_subject_test_set(
+        config, 
+        all_target_raws, 
+        all_target_events, 
+        target_metadata["filenames"], 
+        exclude_indices=train_indices, 
+        num_p554=0, 
+        num_p999_general=0, 
+        num_p999_dino=4,
+        shuffle=False
     )
     print(f"Loaded {len(x_raw_test)} target subject sessions for testing.")
 
     # Training: Filter the data and create epochs with metadata for grouped CV
+    # NOTE: If you use Physionet + target subject -> subject-wise CV
+    #       If you use only target subject data -> file-wise CV
     all_epochs_list = []
-    for raw, events, sub_id in zip(x_raw_train, events_train, sub_ids_train):
+    for raw, events, sub_id, i in zip(x_raw_train, events_train, sub_ids_train, train_filenames):
         # Filter the data
         filtered_raw = filter.apply_filter_offline(raw)
 
@@ -90,21 +153,35 @@ if __name__ == "__main__":
         epochs = mne.Epochs(
             filtered_raw,
             events,
-            event_id=event_id_train,
+            event_id=target_event_id,
             tmin=0.5,
             tmax=4.0,
             preload=True,
             baseline=None,
         )
 
+        # TODO: Normalize the data
+
         # Attach metadata
         metadata = pd.DataFrame(
             {
                 "subject_id": [sub_id] * len(epochs),
+                "filename": [i] * len(epochs),  
                 "condition": epochs.events[:, 2],
-            }
+            }  
         )
+
         epochs.metadata = metadata
+
+        # Normalize the epochs data
+        """
+        scaler = StandardScaler()
+        n_epochs, n_channels, n_times = epochs.get_data().shape
+        epochs_data = epochs.get_data().reshape(n_epochs * n_channels, n_times)
+        epochs_data = scaler.fit_transform(epochs_data)
+        epochs_data = epochs_data.reshape(n_epochs, n_channels, n_times)
+        epochs._data = epochs_data
+        """
 
         all_epochs_list.append(epochs)
 
@@ -113,25 +190,26 @@ if __name__ == "__main__":
     X_train = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
     y_train = combined_epochs.events[:, 2]  # The labels (e.g., 1, 2, 3)
     groups = (
-        combined_epochs.metadata["subject_id"].values
+        combined_epochs.metadata["filename"].values  # metadata["subject_id"] for subject-wise CV
         if combined_epochs.metadata is not None
         else None
     )
 
-    # =============================================================================
+    # Extra Step, to make sure the classes are changed from
+    # 1 - Rest, 2 - Left Hand MI, 3 - Right Hand MI
+    # to
+    # 0 - Rest, 1 - Left Hand MI, 2 - Right Hand MI
+
+    for i in range(y_train.shape[0]):
+        y_train[i] -= 1
+
     # Grouped K-Fold Cross-Validation
-    # =============================================================================
     if config.n_folds >= 2 and gkf is not None and groups is not None:
-        print("\n" + "=" * 60)
-        print("CROSS-VALIDATION ON TRAINING DATA (CSP)")
-        print("=" * 60)
 
         cv_metrics_list = []  # To compute the mean metrics over folds
         for fold_idx, (train_idx, val_idx) in enumerate(
             gkf.split(X_train, y_train, groups=groups)
         ):
-            print(f"\n--- Fold {fold_idx + 1}/{config.n_folds} ---")
-
             # Epoch the data into windows
             fold_windowed_epochs = epochs_windows_from_fold(
                 combined_epochs,
@@ -151,6 +229,7 @@ if __name__ == "__main__":
             )
 
             # Remove artifacts within each fold
+            """
             ar = ArtefactRemoval()
             ar.get_rejection_thresholds(X_train_fold, config)
 
@@ -158,39 +237,33 @@ if __name__ == "__main__":
                 X_train_fold, y_train_fold
             )
             X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
+            """
+            X_train_clean, y_train_clean = X_train_fold, y_train_fold
+            X_val_clean, y_val_clean = X_val_fold, y_val_fold
 
-            # Train CSP model on clean training fold
-            fold_clf = CSP_Model(classifier="lda", n_components=10)
-            start_train_time = time.time() * 1000
-            fold_clf.fit(X_train_clean, y_train_clean)
-            end_train_time = time.time() * 1000
+            # Train and evaluate the model within each fold
+            clf = choose_model("riemann", {"cov_est": "lwf"})
+            clf.fit(X_train_clean, y_train_clean)
 
             # Evaluate on validation fold
-            start_eval_time = time.time() * 1000
-            fold_predictions = fold_clf.predict(X_val_clean)
-            end_eval_time = time.time() * 1000
-            fold_probabilities = fold_clf.predict_proba(X_val_clean)
+            fold_predictions = clf.predict(X_val_clean)
+            fold_probabilities = clf.predict_proba(X_val_clean)
 
             # Compute metrics for this fold
             fold_metrics = compile_metrics(
                 y_true=y_val_clean,
                 y_pred=fold_predictions,
                 y_prob=fold_probabilities,
-                timings={
-                    "train_time": end_train_time - start_train_time,
-                    "infer_latency": (end_eval_time - start_eval_time)
-                    / max(1, len(y_val_clean)),
-                    "total_latency": (end_eval_time - start_eval_time)
-                    / max(1, len(y_val_clean)),
-                    "filter_latency": filter.get_filter_latency(),
-                },
-                n_classes=len(event_id_train),
+                timings=None,
+                n_classes=len(target_event_id),  
             )
 
             cv_metrics_list.append(fold_metrics)
-            print(f"Fold {fold_idx + 1} Accuracy: {fold_metrics['Acc.']:.4f}")
+            print(f"Fold {fold_idx} Accuracy: {fold_metrics['Acc.']:.4f}")
 
         # CV Results
+        # TODO: Discuss with team what metrics are relevant from CV. For now just the performance ones are computed
+
         print("\n" + "=" * 60)
         print("CROSS-VALIDATION RESULTS (Mean ± Std)")
         print("=" * 60)
@@ -203,9 +276,8 @@ if __name__ == "__main__":
             values = [m[key] for m in cv_metrics_list]
             if key in [
                 "Train Time (ms)",
-                "Avg. Infer Latency (ms)",
+                "Infer. Time (ms)",
                 "Avg. Filter Latency (ms)",
-                "Avg. Total Latency (ms)",
                 "ITR (bits/min)",
             ]:
                 cv_mean_metrics[key] = round(np.mean(values), 2)
@@ -220,9 +292,8 @@ if __name__ == "__main__":
         for key in metric_keys:
             if key in [
                 "Train Time (ms)",
-                "Avg. Infer Latency (ms)",
+                "Infer. Time (ms)",
                 "Avg. Filter Latency (ms)",
-                "Avg. Total Latency (ms)",
                 "ITR (bits/min)",
             ]:
                 cv_summary[key] = (
@@ -237,38 +308,38 @@ if __name__ == "__main__":
         metrics_table.add_rows([cv_summary])
         metrics_table.display()
 
-    # =============================================================================
-    # Final Evaluation on Holdout Test Set
-    # =============================================================================
+    # Results on Holdout
 
-    # Extract the windowed epochs for final training
-    X_train_windows, y_train_windows = epochs_to_windows(
+    # Extract the windowed epochs
+    X_train_windows, y_train_windows, train_groups_windows = epochs_to_windows(
         combined_epochs,
+        groups,
         window_size=config.window_size,
         step_size=config.step_size,
     )
 
+    """
     ar = ArtefactRemoval()
     ar.get_rejection_thresholds(X_train_windows, config)
     X_train_clean, y_train_clean = ar.reject_bad_epochs(
         X_train_windows, y_train_windows
     )
+    """
 
-    # Construct Final CSP Model
-    clf = CSP_Model(classifier="lda", n_components=10)
+    X_train_clean, y_train_clean = X_train_windows, y_train_windows
+
+    # Construct Final Model
+    clf = choose_model("riemann", {"cov_est": "lwf"})
 
     # Train the final model on all clean training data
-    print("\nTraining final CSP model on all training data...")
+    print("\nTraining final model on all training data...")
     start_train_time = time.time() * 1000
-    clf.fit(X_train_clean, y_train_clean)
+    clf.fit_centered(X_train_clean, y_train_clean, train_groups_windows)
+    # clf.fit(X_train_clean, y_train_clean)
     end_train_time = time.time() * 1000
 
     # Test on the holdout test set
     if use_test:
-        print("\n" + "=" * 60)
-        print("EVALUATION ON HOLDOUT TEST SET")
-        print("=" * 60)
-
         # Prepare test data - Filter, Epoch and Window, Remove Artifacts
         all_test_epochs_list = []
         start_total_time = time.time() * 1000
@@ -280,28 +351,45 @@ if __name__ == "__main__":
             epochs = mne.Epochs(
                 filtered_raw,
                 events,
-                event_id=event_id_test,
+                event_id=target_event_id,  
                 tmin=0.5,
-                tmax=4.0,
+                tmax=3.0,
                 preload=True,
                 baseline=None,
             )
 
+            # TODO: Should we attach metadata?
             all_test_epochs_list.append(epochs)
 
         combined_test_epochs = mne.concatenate_epochs(all_test_epochs_list)
+        test_epochs = combined_test_epochs.get_data()
+        test_labels = combined_test_epochs.events[:, 2]
 
         # Extract windowed epochs for testing
-        X_test_windows, y_test_windows = epochs_to_windows(
+        X_test_windows, y_test_windows, _ = epochs_to_windows(
             combined_test_epochs,
+            test_labels,  # Optional in this case
             window_size=config.window_size,
             step_size=config.step_size,
         )
 
         # Also clean test data using the same thresholds
+        """
         X_test_clean, y_test_clean = ar.reject_bad_epochs(
             X_test_windows, y_test_windows
         )
+        """
+        X_test_clean, y_test_clean = X_test_windows, y_test_windows
+
+        print(np.unique(y_test_clean))
+
+        # Extra Step, to make sure the classes are changed from
+        # 1 - Rest, 2 - Left Hand MI, 3 - Right Hand MI
+        # to
+        # 0 - Rest, 1 - Left Hand MI, 2 - Right Hand MI
+
+        for i in range(y_test_clean.shape[0]):
+            y_test_clean[i] -= 1
 
         # Evaluate on holdout test set
         print("Evaluating on holdout test set...")
@@ -313,6 +401,7 @@ if __name__ == "__main__":
         end_total_time = time.time() * 1000
 
         # Compute metrics for test set
+
         test_metrics = compile_metrics(
             y_true=y_test_clean,
             y_pred=test_predictions,
@@ -325,7 +414,7 @@ if __name__ == "__main__":
                 / max(1, len(y_test_clean)),
                 "filter_latency": filter.get_filter_latency(),
             },
-            n_classes=len(event_id_train),
+            n_classes=len(target_event_id),  
         )
 
         # Add dataset label after computing metrics
@@ -338,12 +427,13 @@ if __name__ == "__main__":
         metrics_table.display()
 
     # Save the Model and other Objects
-    model_path = Path.cwd() / "resources" / "models" / "csp_model.pkl"
+    model_path = Path.cwd() / "resources" / "models" / "model.pkl"
     clf.save(model_path)
-    print(f"CSP Model saved to: {model_path}")
+    print(f"Model saved to: {model_path}")
 
     # Save the Artefact Removal Object
-    ar_path = Path.cwd() / "resources" / "models" / "csp_artefact_removal.pkl"
+    ar_path = Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
     with open(ar_path, "wb") as f:
-        pickle.dump(ar, f)
+        if ar:
+            pickle.dump(ar, f)
     print(f"Artefact Removal object saved to: {ar_path}")
