@@ -1,7 +1,7 @@
 # Signal processing parameters
-window_size: 160
+window_size: 250
 step_size: 32
-fs: 160.0
+fs: 250
 
 frequencies:
   - 8

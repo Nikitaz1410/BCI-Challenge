@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-from bci.models.CSP_Baseline import CSP_Model
+from bci.models.Baseline import CSPSVMModel
 from bci.models.riemann import RiemannianClf
 from bci.models.SAE import SAEModel
 from bci.models.MIRepNet import MIRepNetModel
@@ -31,7 +31,7 @@ def choose_model(model_name: str, model_params: Optional[Dict[str, Any]] = None)
     model_registry = {
         "riemann": RiemannianClf,
         "sae": SAEModel,
-        "cspsvm": CSP_Model,
+        "cspsvm": CSPSVMModel,
         "mirepnet": MIRepNetModel,
     }
 
