@@ -57,34 +57,32 @@ class Filter:
 
         # In online mode, maintain filter state for each channel
         if online:
-            # TODO: Buffer overlap?? @Iustin
+            nr_of_channels = len(self.config.channels) - len(
+                self.config.remove_channels
+            )
             # zi shape: (n_sections, 2)
             self.zi: np.ndarray = scipy.signal.sosfilt_zi(self.sos)
-            # Expand to (n_channels, n_sections, 2)
-            self.zi = np.tile(self.zi, (len(self.config.channels), 1, 1))
+            # Expand to (n_sections, n_channels, 2)
+            self.zi = np.repeat(self.zi[:, np.newaxis, :], nr_of_channels, axis=1)
+            print(f"Initialized filter state with dimension {self.zi.shape}.")
 
-    def apply_filter_offline(self, raw: mne.io.BaseRaw) -> mne.io.BaseRaw:
+    def apply_filter_offline(self, signal: np.ndarray) -> np.ndarray:
         """
         Apply the designed SOS filter to the entire raw data (offline/batch).
 
         Parameters
         ----------
-        raw : mne.io.BaseRaw
-            Raw EEG data object
+        data : np.ndarray
+            Raw EEG data (n_channels, n_time)
 
         Returns
         -------
-        filtered_raw : mne.io.BaseRaw
-            New Raw object with filtered data
+        filtered_data : np.ndarray
+            Filtered data -> Suitable for the .apply_function of raw
         """
         # Use SOS for actual filtering (stability)
-        filtered_signal: np.ndarray = scipy.signal.sosfilt(self.sos, raw.get_data())
-
-        # Create a new Raw object with the filtered data
-        filtered_raw = raw.copy()
-        filtered_raw._data = filtered_signal
-
-        return filtered_raw
+        filtered_signal: np.ndarray = scipy.signal.sosfilt(self.sos, signal, axis=-1)
+        return filtered_signal
 
     def apply_filter_online(self, data_chunk: np.ndarray) -> np.ndarray:
         """
@@ -101,10 +99,10 @@ class Filter:
             Filtered data chunk of same shape as input
         """
         filtered_chunk = np.zeros_like(data_chunk)
-        for ch_idx in range(data_chunk.shape[0]):
-            filtered_chunk[ch_idx, :], self.zi[ch_idx] = scipy.signal.sosfilt(
-                self.sos, data_chunk[ch_idx, :], zi=self.zi[ch_idx]
-            )
+        # Process each channel in parallel using vectorized operations
+        filtered_chunk, self.zi = scipy.signal.sosfilt(
+            self.sos, data_chunk, zi=self.zi, axis=-1
+        )
         return filtered_chunk
 
     def apply_notch(self, raw: mne.io.BaseRaw, freqs: list) -> mne.io.BaseRaw:
