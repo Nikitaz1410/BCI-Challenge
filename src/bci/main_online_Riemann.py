@@ -14,10 +14,10 @@ from pathlib import Path
 import numpy as np
 from pylsl import StreamInlet, resolve_streams
 
+from bci.models.riemann import RiemannianClf
 from bci.preprocessing.filters import Filter
 from bci.transfer.transfer import BCIController
 from bci.utils.bci_config import load_config
-from bci.utils.utils import choose_model
 
 if __name__ == "__main__":
     # Initialize the Objects
@@ -47,13 +47,26 @@ if __name__ == "__main__":
     model_args = {
         "cov_est": "lwf"
     }  # args for the model chooser (what the model constructor needs)
-    clf = choose_model(config.model)
+    clf = RiemannianClf(model_args)
     clf = clf.load(model_path)
 
     # Transfer Function
     controller = BCIController(config)
 
-    buffer = np.zeros((len(config.channels), int(config.window_size)), dtype=np.float32)
+    keep_mask = np.array(
+        [
+            config.channels.index(ch)
+            for ch in config.channels
+            if ch not in config.remove_channels
+        ]
+    )
+
+    print(f"Keep Indices: {keep_mask}")
+
+    buffer = np.zeros(
+        (len(np.array(config.channels)[keep_mask]), int(config.window_size)),
+        dtype=np.float32,
+    )
     label_buffer = np.zeros((1, int(config.window_size)), dtype=np.int32)
 
     avg_time_per_classification = 0.0
@@ -109,7 +122,7 @@ if __name__ == "__main__":
         inlet_labels = StreamInlet(label_streams[0], max_chunklen=32)
 
     print("Starting to read data from the EEG stream...")
-    print(f"Reading Labels from {label_streams[0].name()}")
+    # print(f"Reading Labels from {label_streams[0].name()}")
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         while True:
@@ -122,15 +135,22 @@ if __name__ == "__main__":
                 # Check if sample and labels are valid and non-empty
                 if eeg_chunk:
                     # Convert to numpy arrays and transpose to (n_channels, n_samples)
-                    eeg_chunk = np.array(eeg_chunk).T  # shape (n_channels, n_samples)
+                    eeg_chunk = np.array(eeg_chunk).T[
+                        keep_mask
+                    ]  # shape (n_channels, n_samples) -> Keep only channels of interest
                     n_new_samples = eeg_chunk.shape[1]
+
+                    # STATEFUL FILTERING
+                    filtered_chunk = filter.apply_filter_online(eeg_chunk)
+
                     # Safety: If new data is larger than the buffer, just take the end of it
                     if n_new_samples >= config.window_size:
-                        buffer = eeg_chunk[:, -config.window_size :]
+                        buffer = filtered_chunk[:, -config.window_size :]
 
                     # Update the buffers with the new chunks of data
+                    # The buffer already has the filtered data inside
                     buffer[:, :-n_new_samples] = buffer[:, n_new_samples:]
-                    buffer[:, -n_new_samples:] = eeg_chunk
+                    buffer[:, -n_new_samples:] = filtered_chunk
 
                 if labels_chunk:
                     labels_chunk = np.array(labels_chunk).T  # shape (1, n_samples)
@@ -162,13 +182,10 @@ if __name__ == "__main__":
                 else:
                     crt_label = -1  # fallback to unknown
 
-                # Filter the data
-                filtered_data = filter.apply_filter_online(buffer)
+                # ARTIFACT REJECTION: Skipped for now
 
-                # Artifact Rejection: Skipped for now
-
-                # Create the features and classify
-                probabilities = clf.predict_proba(filtered_data)
+                # CLASSIFICATION:
+                probabilities = clf.predict_proba(buffer)  # The buffer is filtered data
 
                 if probabilities is None:
                     print("Warning: Model returned None for probability.")

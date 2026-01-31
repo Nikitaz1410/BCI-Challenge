@@ -2,6 +2,7 @@
 data
 resources/models
 resources/game_assets
+resources/plots
 .vscode
 
 # Byte-compiled / optimized / DLL files

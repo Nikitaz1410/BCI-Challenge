@@ -137,3 +137,229 @@ class LDACore:
                 probs[i] = exp_neg / exp_neg.sum()
 
         return probs[0:1] if single else probs
+
+
+# ============================================================================
+# Functional API wrappers for compatibility with hybrid_lda.py
+# ============================================================================
+
+def fit_lda(X, y, reg=1e-2, shrinkage_alpha=None, compute_priors=False):
+    """
+    Fit LDA and return parameters in functional form.
+    
+    Parameters:
+    -----------
+    X : np.ndarray, shape (n_samples, n_features)
+        Feature matrix
+    y : np.ndarray, shape (n_samples,)
+        Class labels
+    reg : float, default=1e-2
+        Regularization coefficient for covariance matrix
+    shrinkage_alpha : float or None, default=None
+        Shrinkage parameter in [0, 1]. If None, uses reg instead.
+    compute_priors : bool, default=False
+        Whether to compute and return class priors
+        
+    Returns:
+    --------
+    means : dict
+        Dictionary mapping class labels to mean vectors
+    cov : np.ndarray
+        Regularized covariance matrix
+    inv_cov : np.ndarray
+        Inverse of regularized covariance matrix
+    classes : np.ndarray
+        Array of unique class labels
+    priors : np.ndarray or None
+        Array of class priors if compute_priors=True, else None
+    """
+    # Create and fit LDA model
+    lda = LDACore()
+    lda.fit(X, y)
+    
+    # Apply regularization/shrinkage to covariance
+    if shrinkage_alpha is not None:
+        # Shrinkage: (1 - alpha) * cov + alpha * trace(cov)/n_features * I
+        trace_cov = np.trace(lda.sigma)
+        n_features = lda.sigma.shape[0]
+        identity = np.eye(n_features)
+        regularized_cov = (1 - shrinkage_alpha) * lda.sigma + shrinkage_alpha * (trace_cov / n_features) * identity
+    else:
+        # Regularization: add reg * I
+        regularized_cov = lda.sigma + reg * np.eye(lda.sigma.shape[0])
+    
+    # Compute inverse
+    try:
+        inv_cov = np.linalg.inv(regularized_cov)
+    except np.linalg.LinAlgError:
+        # If singular, use pseudo-inverse
+        inv_cov = np.linalg.pinv(regularized_cov)
+    
+    # Compute priors if requested
+    priors = None
+    if compute_priors:
+        unique_labels, counts = np.unique(y, return_counts=True)
+        priors = counts / len(y)
+        # Ensure priors are in the same order as classes
+        priors_dict = dict(zip(unique_labels, priors))
+        priors = np.array([priors_dict[c] for c in lda.classes])
+    
+    return lda.mu, regularized_cov, inv_cov, lda.classes, priors
+
+
+def predict_proba_lda(X, means, inv_cov, classes, priors=None, method='discriminant'):
+    """
+    Predict class probabilities using LDA parameters.
+    
+    Parameters:
+    -----------
+    X : np.ndarray, shape (n_samples, n_features) or (n_features,)
+        Feature matrix
+    means : dict
+        Dictionary mapping class labels to mean vectors
+    inv_cov : np.ndarray, shape (n_features, n_features)
+        Inverse covariance matrix
+    classes : np.ndarray
+        Array of class labels
+    priors : np.ndarray or None, default=None
+        Class priors. If None, assumes uniform priors.
+    method : str, default='discriminant'
+        Method for computing probabilities ('discriminant' or 'mahalanobis')
+        
+    Returns:
+    --------
+    probabilities : np.ndarray, shape (n_samples, n_classes)
+        Class probabilities
+    """
+    if X.ndim == 1:
+        X = X[np.newaxis, :]
+        single = True
+    else:
+        single = False
+    
+    n_samples = X.shape[0]
+    n_classes = len(classes)
+    probs = np.zeros((n_samples, n_classes))
+    
+    if method == 'discriminant':
+        # Use discriminant scores (Mahalanobis distance with log-priors)
+        for i in range(n_samples):
+            scores = np.zeros(n_classes)
+            for j, c in enumerate(classes):
+                # Mahalanobis distance: (x - mu)^T * inv_cov * (x - mu)
+                diff = X[i] - means[c]
+                mahal_dist = diff.T @ inv_cov @ diff
+                scores[j] = -0.5 * mahal_dist
+                
+                # Add log prior if provided
+                if priors is not None:
+                    scores[j] += np.log(priors[j] + 1e-10)
+            
+            # Softmax to convert scores to probabilities
+            exp_scores = np.exp(scores - np.max(scores))  # Numerical stability
+            probs[i] = exp_scores / exp_scores.sum()
+    else:
+        # Fallback: use Mahalanobis distance directly
+        for i in range(n_samples):
+            dists = np.array([
+                (X[i] - means[c]).T @ inv_cov @ (X[i] - means[c])
+                for c in classes
+            ])
+            exp_neg = np.exp(-dists)
+            probs[i] = exp_neg / exp_neg.sum()
+    
+    return probs[0:1] if single else probs
+
+
+def predict_lda(X, means, inv_cov, classes, priors=None):
+    """
+    Predict class labels using LDA parameters.
+    
+    Parameters:
+    -----------
+    X : np.ndarray, shape (n_samples, n_features) or (n_features,)
+        Feature matrix
+    means : dict
+        Dictionary mapping class labels to mean vectors
+    inv_cov : np.ndarray, shape (n_features, n_features)
+        Inverse covariance matrix
+    classes : np.ndarray
+        Array of class labels
+    priors : np.ndarray or None, default=None
+        Class priors
+        
+    Returns:
+    --------
+    predictions : np.ndarray, shape (n_samples,)
+        Predicted class labels
+    """
+    probs = predict_proba_lda(X, means, inv_cov, classes, priors, method='discriminant')
+    class_indices = np.argmax(probs, axis=1)
+    return np.array([classes[i] for i in class_indices])
+
+
+def compute_discriminant_scores(X, means, inv_cov, classes, priors=None):
+    """
+    Compute discriminant scores for each class.
+    
+    Parameters:
+    -----------
+    X : np.ndarray, shape (n_samples, n_features) or (n_features,)
+        Feature matrix
+    means : dict
+        Dictionary mapping class labels to mean vectors
+    inv_cov : np.ndarray, shape (n_features, n_features)
+        Inverse covariance matrix
+    classes : np.ndarray
+        Array of class labels
+    priors : np.ndarray or None, default=None
+        Class priors
+        
+    Returns:
+    --------
+    scores : np.ndarray, shape (n_samples, n_classes)
+        Discriminant scores for each class
+    """
+    if X.ndim == 1:
+        X = X[np.newaxis, :]
+        single = True
+    else:
+        single = False
+    
+    n_samples = X.shape[0]
+    n_classes = len(classes)
+    scores = np.zeros((n_samples, n_classes))
+    
+    for i in range(n_samples):
+        for j, c in enumerate(classes):
+            # Mahalanobis distance: (x - mu)^T * inv_cov * (x - mu)
+            diff = X[i] - means[c]
+            mahal_dist = diff.T @ inv_cov @ diff
+            scores[i, j] = -0.5 * mahal_dist
+            
+            # Add log prior if provided
+            if priors is not None:
+                scores[i, j] += np.log(priors[j] + 1e-10)
+    
+    return scores[0:1] if single else scores
+
+
+def softmax(x, axis=-1):
+    """
+    Compute softmax function.
+    
+    Parameters:
+    -----------
+    x : np.ndarray
+        Input array
+    axis : int, default=-1
+        Axis along which to compute softmax
+        
+    Returns:
+    --------
+    softmax : np.ndarray
+        Softmax probabilities
+    """
+    # Numerical stability: subtract max
+    exp_x = np.exp(x - np.max(x, axis=axis, keepdims=True))
+    return exp_x / np.sum(exp_x, axis=axis, keepdims=True)

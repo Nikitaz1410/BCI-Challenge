@@ -32,19 +32,22 @@ channels:
 remove_channels: # Optional - Maybe for the future
   - "Fp1"
   - "Fp2"
+  - "T7"
+  - "T8"
+  - "Oz"
 
 subjects_ids: # Range if given 2 numbers | List if specific ids
   - 1
   - 15
 
-n_folds: 3
+n_folds: 0
 random_state: 42
 finetune: "sub-P544" # Options: sub-P999, sub-P544
 test: "sub-P544" # Options: sub-P999, sub-P544
 target: "sub" # Folder name with all target subject data
 
 # Online
-online: "dino" # Options: dino (Needs an active eeg stream), prerecorded (for testing)
+online: "prerecorded" # Options: dino (Needs an active eeg stream), prerecorded (for testing)
 replay_subject_id: "Phy-42" # Options: Phy-### (for Physionet data), sub-P### (for our data)
 ip: "127.0.0.1" # IP address for UDP communication to the dino game (Check the dino game for the values)
 port: 5005 # Port for the UDP communication to the dino game

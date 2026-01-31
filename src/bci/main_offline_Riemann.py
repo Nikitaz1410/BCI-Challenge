@@ -8,17 +8,23 @@ src_dir = Path(__file__).parent.parent
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
+import matplotlib.pyplot as plt
 import mne
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler, StandardScaler
 
 # Evaluation
 from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
-from bci.loading.loading import load_physionet_data, load_target_subject_data, create_subject_train_set, create_subject_test_set
+from bci.loading.loading import (
+    create_subject_test_set,
+    create_subject_train_set,
+    load_physionet_data,
+    load_target_subject_data,
+)
 from bci.preprocessing.artefact_removal import ArtefactRemoval
 
 # Preprocessing
@@ -49,7 +55,7 @@ if __name__ == "__main__":
     # Initialize variables
     np.random.seed(config.random_state)
     metrics_table = MetricsTable()
-   
+
     gkf = None
     if config.n_folds < 2:
         print("No cross-validation will be performed.")
@@ -57,6 +63,9 @@ if __name__ == "__main__":
         gkf = GroupKFold(n_splits=config.n_folds)  # Cross-Validation splitter
 
     filter = Filter(config, online=False)
+
+    plotting_path = current_wd / "resources" / "plots"
+    plotting_path.mkdir(parents=True, exist_ok=True)
 
     fine_tune_data_source_path = (
         current_wd / "data" / config.test
@@ -67,9 +76,9 @@ if __name__ == "__main__":
     )  # Path can be defined in config file
 
     test_data_source_path = (
-        current_wd / "data" / "eeg" / config.target     
+        current_wd / "data" / "eeg" / config.target
     )  # Path can be defined in config file
-    # NOTE: To load all target subject data, you need to have "sub" folder in both test_data_source_path with all subject data files 
+    # NOTE: To load all target subject data, you need to have "sub" folder in both test_data_source_path with all subject data files
 
     test_data_target_path = (
         current_wd / "data" / "datasets" / config.target
@@ -78,46 +87,60 @@ if __name__ == "__main__":
     use_test = True  # Whether to test on target subject data after CV
     timings = {}
 
-    # Load training data from Physionet
-    x_raw_physionet_train, events_physionet_train, event_id_physionet_train, sub_ids_physionet_train, train_physionet_filenames = load_physionet_data(
-        subjects=config.subjects, 
-        root=current_wd, 
-        channels=config.channels
-    )
-    print(f"Loaded {len(x_raw_physionet_train)} subjects from Physionet for training.")
+    # # Load training data from Physionet
+    # (
+    #     x_raw_physionet_train,
+    #     events_physionet_train,
+    #     event_id_physionet_train,
+    #     sub_ids_physionet_train,
+    #     train_physionet_filenames,
+    # ) = load_physionet_data(
+    #     subjects=config.subjects, root=current_wd, channels=config.channels
+    # )
+    # print(f"Loaded {len(x_raw_physionet_train)} subjects from Physionet for training.")
 
     # Load all target subject data
     # NOTE: You can use either this output directly or use train/test creation functions below
-    all_target_raws, all_target_events, target_event_id, target_sub_ids, target_metadata = load_target_subject_data(
+    (
+        all_target_raws,
+        all_target_events,
+        target_event_id,
+        target_sub_ids,
+        target_metadata,
+    ) = load_target_subject_data(
         root=current_wd,
         source_path=test_data_source_path,
         target_path=test_data_target_path,
-        resample=False
+        resample=False,
     )
 
     print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
-   
-    ''' Target subject data after loading: 
+
+    """ Target subject data after loading:
     Total number of P554 files available: 2
     Total number of P999-general files available: 4
     Total number of P999-dino files available: 13
-    '''
+    """
 
     # Create training set from target subject data: Choose how many files of each type to include
-    x_raw_train, events_train, train_filenames, sub_ids_train, train_indices = create_subject_train_set(
-        config, 
-        all_target_raws, 
-        all_target_events, 
-        target_metadata["filenames"], 
-        num_p554=2, 
-        num_p999_general=4, 
-        num_p999_dino=9,
-        shuffle=True
+    x_raw_train, events_train, train_filenames, sub_ids_train, train_indices = (
+        create_subject_train_set(
+            config,
+            all_target_raws,
+            all_target_events,
+            target_metadata["filenames"],
+            num_p554=0,
+            num_p999_general=0,
+            num_p999_dino=5,
+            shuffle=True,
+        )
     )
-    print(f"Loaded {len(x_raw_train)} subjects from target subject sessions for training.")
+    print(
+        f"Loaded {len(x_raw_train)} subjects from target subject sessions for training."
+    )
 
     # You can concatenate Physionet data with target subject data for training if desired
-    
+
     # print(f"Training set composition including target subject data:")
     # x_raw_train += x_raw_physionet_train
     # events_train += events_physionet_train
@@ -127,18 +150,17 @@ if __name__ == "__main__":
     # print(f"Selected {len(x_raw_train)} files in total for training")
     # print("Training files:", train_filenames)
 
-
     # Create test set from target subject data: Exclude training indices
     x_raw_test, events_test, test_filenames, sub_ids_test = create_subject_test_set(
-        config, 
-        all_target_raws, 
-        all_target_events, 
-        target_metadata["filenames"], 
-        exclude_indices=train_indices, 
-        num_p554=0, 
-        num_p999_general=0, 
-        num_p999_dino=4,
-        shuffle=False
+        config,
+        all_target_raws,
+        all_target_events,
+        target_metadata["filenames"],
+        exclude_indices=train_indices,
+        num_p554=0,
+        num_p999_general=4,
+        num_p999_dino=0,
+        shuffle=False,
     )
     print(f"Loaded {len(x_raw_test)} target subject sessions for testing.")
 
@@ -146,67 +168,55 @@ if __name__ == "__main__":
     # NOTE: If you use Physionet + target subject -> subject-wise CV
     #       If you use only target subject data -> file-wise CV
     all_epochs_list = []
-    for raw, events, sub_id, i in zip(x_raw_train, events_train, sub_ids_train, train_filenames):
-        # Filter the data
-        filtered_raw = filter.apply_filter_offline(raw)
+    for raw, events, sub_id, i in zip(
+        x_raw_train, events_train, sub_ids_train, train_filenames
+    ):
+        # FILTERING: Filter the data by using the mne apply function method
+        filtered_raw = raw.copy()
+        filtered_raw.apply_function(filter.apply_filter_offline)
 
-        # Create the epochs for CV with metadata
+        # CHANNEL REMOVAL: Remove unnecessary channels like noise sources
+        filtered_raw.drop_channels(config.remove_channels)
+
+        # EPOCHING: Create the epochs for CV with metadata
         epochs = mne.Epochs(
             filtered_raw,
             events,
             event_id=target_event_id,
-            tmin=0.5,
-            tmax=4.0,
+            tmin=0.3,  # Start at 0.3 to avoid VEP/ERP due to the Visual Cues
+            tmax=3.0,
             preload=True,
-            baseline=None,
+            baseline=None,  # Should we apply baseline correction?
         )
-
-        # TODO: Normalize the data
 
         # Attach metadata
         metadata = pd.DataFrame(
             {
                 "subject_id": [sub_id] * len(epochs),
-                "filename": [i] * len(epochs),  
+                "filename": [i] * len(epochs),
                 "condition": epochs.events[:, 2],
-            }  
+            }
         )
 
         epochs.metadata = metadata
-
-        # Normalize the epochs data
-        """
-        scaler = StandardScaler()
-        n_epochs, n_channels, n_times = epochs.get_data().shape
-        epochs_data = epochs.get_data().reshape(n_epochs * n_channels, n_times)
-        epochs_data = scaler.fit_transform(epochs_data)
-        epochs_data = epochs_data.reshape(n_epochs, n_channels, n_times)
-        epochs._data = epochs_data
-        """
-
         all_epochs_list.append(epochs)
 
     # Prepare Epochs with Metadata for Grouped CV
     combined_epochs = mne.concatenate_epochs(all_epochs_list)
+
     X_train = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
     y_train = combined_epochs.events[:, 2]  # The labels (e.g., 1, 2, 3)
+
     groups = (
-        combined_epochs.metadata["filename"].values  # metadata["subject_id"] for subject-wise CV
+        combined_epochs.metadata[
+            "filename"
+        ].values  # metadata["subject_id"] for subject-wise CV
         if combined_epochs.metadata is not None
         else None
     )
 
-    # Extra Step, to make sure the classes are changed from
-    # 1 - Rest, 2 - Left Hand MI, 3 - Right Hand MI
-    # to
-    # 0 - Rest, 1 - Left Hand MI, 2 - Right Hand MI
-
-    for i in range(y_train.shape[0]):
-        y_train[i] -= 1
-
     # Grouped K-Fold Cross-Validation
     if config.n_folds >= 2 and gkf is not None and groups is not None:
-
         cv_metrics_list = []  # To compute the mean metrics over folds
         for fold_idx, (train_idx, val_idx) in enumerate(
             gkf.split(X_train, y_train, groups=groups)
@@ -214,7 +224,7 @@ if __name__ == "__main__":
             # Epoch the data into windows
             fold_windowed_epochs = epochs_windows_from_fold(
                 combined_epochs,
-                groups, 
+                groups,
                 train_idx,
                 val_idx,
                 window_size=config.window_size,
@@ -225,13 +235,28 @@ if __name__ == "__main__":
                 fold_windowed_epochs["X_train"],
                 fold_windowed_epochs["y_train"],
             )
+
+            # NORMALIZATION -> We are doing this on the raw signal in case we extract features that might be influenced by nonstationarity
+            # scaler = RobustScaler()
+            # n_epochs, n_channels, n_times = epochs.get_data().shape
+            # epochs_data = epochs.get_data()
+            # epochs_data = epochs_data.transpose(0, 2, 1).reshape(-1, n_channels)
+            # scaled_data = scaler.fit_transform(epochs_data)
+            # epochs_data = scaled_data.reshape(n_epochs, n_times, n_channels).transpose(
+            #     0, 2, 1
+            # )
+            # epochs._data = epochs_data
+            # epochs.baseline = None  # Previos baseline info is invalid due to scaling
+
             X_val_fold, y_val_fold = (
                 fold_windowed_epochs["X_val"],
                 fold_windowed_epochs["y_val"],
             )
 
+            # Apply the trained scaler on the validation fold
+
             # Remove artifacts within each fold
-            
+
             ar = ArtefactRemoval()
             ar.get_rejection_thresholds(X_train_fold, config)
 
@@ -239,7 +264,7 @@ if __name__ == "__main__":
                 X_train_fold, y_train_fold
             )
             X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
-            
+
             # X_train_clean, y_train_clean = X_train_fold, y_train_fold
             # X_val_clean, y_val_clean = X_val_fold, y_val_fold
 
@@ -257,7 +282,7 @@ if __name__ == "__main__":
                 y_pred=fold_predictions,
                 y_prob=fold_probabilities,
                 timings=None,
-                n_classes=len(target_event_id),  
+                n_classes=len(target_event_id),
             )
 
             cv_metrics_list.append(fold_metrics)
@@ -320,13 +345,11 @@ if __name__ == "__main__":
         step_size=config.step_size,
     )
 
-    """
-    ar = ArtefactRemoval()
-    ar.get_rejection_thresholds(X_train_windows, config)
-    X_train_clean, y_train_clean = ar.reject_bad_epochs(
-        X_train_windows, y_train_windows
-    )
-    """
+    # ar = ArtefactRemoval()
+    # ar.get_rejection_thresholds(X_train_windows, config)
+    # X_train_clean, y_train_clean = ar.reject_bad_epochs(
+    #     X_train_windows, y_train_windows
+    # )
 
     X_train_clean, y_train_clean = X_train_windows, y_train_windows
 
@@ -346,14 +369,18 @@ if __name__ == "__main__":
         all_test_epochs_list = []
         start_total_time = time.time() * 1000
         for raw, events, sub_id in zip(x_raw_test, events_test, sub_ids_test):
-            # Filter the data
-            filtered_raw = filter.apply_filter_offline(raw)
+            # FILTERING: Filter the data by using the mne apply function method
+            filtered_raw = raw.copy()
+            filtered_raw.apply_function(filter.apply_filter_offline)
+
+            # CHANNEL REMOVAL: Remove unnecessary channels like noise sources
+            filtered_raw.drop_channels(config.remove_channels)
 
             # Create the epochs for testing
             epochs = mne.Epochs(
                 filtered_raw,
                 events,
-                event_id=target_event_id,  
+                event_id=target_event_id,
                 tmin=0.5,
                 tmax=3.0,
                 preload=True,
@@ -383,16 +410,6 @@ if __name__ == "__main__":
         """
         X_test_clean, y_test_clean = X_test_windows, y_test_windows
 
-        print(np.unique(y_test_clean))
-
-        # Extra Step, to make sure the classes are changed from
-        # 1 - Rest, 2 - Left Hand MI, 3 - Right Hand MI
-        # to
-        # 0 - Rest, 1 - Left Hand MI, 2 - Right Hand MI
-
-        for i in range(y_test_clean.shape[0]):
-            y_test_clean[i] -= 1
-
         # Evaluate on holdout test set
         print("Evaluating on holdout test set...")
         start_eval_time = time.time() * 1000
@@ -416,7 +433,7 @@ if __name__ == "__main__":
                 / max(1, len(y_test_clean)),
                 "filter_latency": filter.get_filter_latency(),
             },
-            n_classes=len(target_event_id),  
+            n_classes=len(target_event_id),
         )
 
         # Add dataset label after computing metrics
@@ -433,9 +450,9 @@ if __name__ == "__main__":
     clf.save(model_path)
     print(f"Model saved to: {model_path}")
 
-    # Save the Artefact Removal Object
-    ar_path = Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
-    with open(ar_path, "wb") as f:
-        if ar:
-            pickle.dump(ar, f)
-    print(f"Artefact Removal object saved to: {ar_path}")
+    # # Save the Artefact Removal Object
+    # ar_path = Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
+    # with open(ar_path, "wb") as f:
+    #     if ar:
+    #         pickle.dump(ar, f)
+    # print(f"Artefact Removal object saved to: {ar_path}")
