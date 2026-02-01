@@ -34,15 +34,19 @@ except ImportError:
 from bci.Preprocessing.filters import Filter
 from bci.transfer.transfer import BCIController
 from bci.utils.bci_config import load_config
-from bci.Models.AdaptiveLDA import AdaptiveLDA
+from bci.Models.AdaptiveLDA_modules.hybrid_lda import HybridLDA
+from bci.Models.AdaptiveLDA_modules.feature_extraction import extract_log_bandpower_features
 
-# Marker definitions (same as offline)
+# Marker definitions (HybridLDA uses 0=rest, 1=left, 2=right)
 markers = {
-    0: "unknown",
-    1: "rest",
-    2: "left_hand",
-    3: "right_hand"
+    0: "rest",
+    1: "left_hand",
+    2: "right_hand"
 }
+
+def extract_features(signals, sfreq):
+    """Extract log-bandpower features for online use."""
+    return extract_log_bandpower_features(signals, sfreq=sfreq, mu_band=(8, 12), beta_band=(13, 30))
 
 if __name__ == "__main__":
     # Load the config file
@@ -60,22 +64,28 @@ if __name__ == "__main__":
     # Initialize variables
     np.random.seed(config.random_state)
 
-    model_path = current_wd / "resources" / "models" / "adaptivelda_model.pkl"
+    model_path = current_wd / "resources" / "models" / "hybrid_lda.pkl"
     artefact_rejection_path = (
         current_wd / "resources" / "models" / "adaptivelda_artefact_removal.pkl"
     )
 
     # Load trained model
-    print(f"Loading Adaptive LDA model from: {model_path}")
+    print(f"Loading Hybrid LDA model from: {model_path}")
     if not model_path.exists():
         print(f"❌ Model not found: {model_path}")
-        print("Please train the model first using main_offline_AdaptiveLDA.ipynb")
+        print("Please train the model first using main_offline_AdaptiveLDA.py")
         sys.exit(1)
     
-    clf = AdaptiveLDA.load(model_path)
+    # Load model (saved as dict with 'model' key)
+    with open(model_path, "rb") as f:
+        model_dict = pickle.load(f)
+        clf = model_dict['model']
+        model_sfreq = model_dict.get('sfreq', config.fs)
+    
     print("✓ Model loaded successfully!")
-    print(f"  Classes: {clf.classes}")
-    print(f"  Number of features: {clf.n_features}")
+    print(f"  Stage info: {clf.get_stage_info()}")
+    print(f"  Number of features: {clf.n_features_}")
+    print(f"  Model sampling frequency: {model_sfreq} Hz")
 
     # Load artifact rejection thresholds
     print(f"\nLoading artifact rejection from: {artefact_rejection_path}")
@@ -94,8 +104,19 @@ if __name__ == "__main__":
     controller = BCIController(config)
     print("✓ BCI Controller initialized")
 
+    # Get channel indices to keep (for removing channels)
+    if hasattr(config, 'remove_channels') and config.remove_channels:
+        channel_indices_to_keep = [i for i, ch in enumerate(config.channels) if ch not in config.remove_channels]
+        n_channels_after_removal = len(channel_indices_to_keep)
+        print(f"  Will remove channels: {config.remove_channels}")
+        print(f"  Keeping {n_channels_after_removal} channels out of {len(config.channels)}")
+    else:
+        channel_indices_to_keep = list(range(len(config.channels)))
+        n_channels_after_removal = len(config.channels)
+    
     # Buffers for storing incoming data
-    buffer = np.zeros((len(config.channels), int(config.window_size)), dtype=np.float32)
+    # Buffer size matches number of channels after removal
+    buffer = np.zeros((n_channels_after_removal, int(config.window_size)), dtype=np.float32)
     label_buffer = np.zeros((1, int(config.window_size)), dtype=np.int32)
 
     # Statistics tracking
@@ -207,6 +228,11 @@ if __name__ == "__main__":
                 if eeg_chunk:
                     # Convert to numpy arrays and transpose to (n_channels, n_samples)
                     eeg_chunk = np.array(eeg_chunk).T  # shape (n_channels, n_samples)
+                    
+                    # Remove unwanted channels (if specified in config)
+                    if hasattr(config, 'remove_channels') and config.remove_channels:
+                        eeg_chunk = eeg_chunk[channel_indices_to_keep, :]
+                    
                     n_new_samples = eeg_chunk.shape[1]
 
                     # Safety: If new data is larger than the buffer, just take the end of it
@@ -242,12 +268,20 @@ if __name__ == "__main__":
                     # Trial just ended! Adapt the model with previous trial data
                     if trial_buffer is not None and trial_true_label is not None and trial_true_label != 0:
                         try:
+                            # Extract features from trial buffer for adaptation
+                            # trial_buffer shape: (n_channels, n_samples)
+                            trial_buffer_reshaped = trial_buffer[np.newaxis, :, :]  # (1, n_channels, n_samples)
+                            trial_features = extract_features(trial_buffer_reshaped, config.fs)  # (1, n_features)
+                            
                             # Adapt model parameters based on completed trial
-                            clf.update(trial_buffer, trial_true_label)
+                            # HybridLDA.update expects: label (0,1,2) and x_feature (1D array)
+                            clf.update(trial_true_label, trial_features[0])
                             total_adaptations += 1
                             print(f"🔄 Adapted model (Trial ended: {markers.get(trial_true_label, 'unknown')} → {markers.get(crt_label, 'unknown')})")
                         except Exception as e:
                             print(f"⚠️  Adaptation failed: {e}")
+                            import traceback
+                            traceback.print_exc()
 
                     # Reset trial buffer for new trial
                     trial_buffer = None
@@ -260,14 +294,17 @@ if __name__ == "__main__":
 
                 previous_label = crt_label
 
-                # Filter the data
+                # Filter the data (channels already removed from buffer)
                 filtered_data = filter.apply_filter_online(buffer)
+                
+                # Reshape for feature extraction: (1, n_channels, n_samples)
+                filtered_data_reshaped = filtered_data[np.newaxis, :, :]
 
-                # Reshape for prediction: (1, n_channels, n_samples)
-                filtered_data = filtered_data[np.newaxis, :, :]
+                # Extract features (HybridLDA expects features, not raw data)
+                features = extract_features(filtered_data_reshaped, config.fs)  # Shape: (1, n_features)
 
-                # Create the features and classify
-                probabilities = clf.predict_proba(filtered_data)
+                # Classify using extracted features
+                probabilities = clf.predict_proba(features)
 
                 if probabilities is None:
                     print("⚠️  Warning: Model returned None for probability.")

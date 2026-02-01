@@ -5,6 +5,12 @@ import sys
 import time
 from pathlib import Path
 
+# Add src directory to Python path to allow imports
+current_file = Path(__file__).resolve()
+src_dir = current_file.parent.parent  # Go from src/bci/replay.py to src/
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
 import numpy as np
 from pylsl import StreamInfo, StreamOutlet
 
@@ -74,7 +80,23 @@ def replay_data_as_lsl(
 
 if __name__ == "__main__":
     # Load the config file
-    current_wd = Path.cwd()  # BCI-Challenge directory
+    # Detect project root: handle both workspace root and BCI-Challenge subdirectory
+    # Script is at: [workspace]/BCI-Challenge/src/bci/replay.py
+    script_dir = Path(__file__).parent.parent.parent  # Goes up 3 levels from script
+    
+    # Check if we're in a BCI-Challenge subdirectory (workspace structure)
+    # The script is at: BCI-Challenge/src/bci/replay.py
+    # So script_dir should be BCI-Challenge directory
+    # Check if script_dir contains "src" and "data" directories to confirm it's the project root
+    if (script_dir / "src").exists() and (script_dir / "data").exists():
+        # This is the BCI-Challenge project root
+        current_wd = script_dir
+    elif (script_dir / "BCI-Challenge" / "src").exists() and (script_dir / "BCI-Challenge" / "data").exists():
+        # We're in workspace root, need to go into BCI-Challenge
+        current_wd = script_dir / "BCI-Challenge"
+    else:
+        # Fallback: assume script_dir is correct
+        current_wd = script_dir
 
     try:
         config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
