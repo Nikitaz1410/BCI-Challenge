@@ -217,7 +217,7 @@ if __name__ == "__main__":
     print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
 
     # ==========================================================================
-    # 2. Create Training Set (matching friend's approach)
+    # 2. Create Training Set 
     # ==========================================================================
     x_raw_train, events_train, train_filenames, sub_ids_train, train_indices = create_subject_train_set(
         config,
@@ -458,7 +458,7 @@ if __name__ == "__main__":
                 filtered_raw,
                 events,
                 event_id=target_event_id,
-                tmin=0.5,
+                tmin=0.3,  # Start at 0.3 to avoid VEP/ERP due to the Visual Cues (match training)
                 tmax=4.0,
                 preload=True,
                 baseline=None,

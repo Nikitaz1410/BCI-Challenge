@@ -233,15 +233,18 @@ if __name__ == "__main__":
                     if hasattr(config, 'remove_channels') and config.remove_channels:
                         eeg_chunk = eeg_chunk[channel_indices_to_keep, :]
                     
-                    n_new_samples = eeg_chunk.shape[1]
+                    # Filter incoming data chunk first (stateful filter updates zi)
+                    filtered_chunk = filter.apply_filter_online(eeg_chunk)
+                    
+                    n_new_samples = filtered_chunk.shape[1]
 
                     # Safety: If new data is larger than the buffer, just take the end of it
                     if n_new_samples >= config.window_size:
-                        buffer = eeg_chunk[:, -config.window_size :]
+                        buffer = filtered_chunk[:, -config.window_size :]
                     else:
-                        # Update the buffers with the new chunks of data
+                        # Update the buffers with the filtered chunks of data
                         buffer[:, :-n_new_samples] = buffer[:, n_new_samples:]
-                        buffer[:, -n_new_samples:] = eeg_chunk
+                        buffer[:, -n_new_samples:] = filtered_chunk
                 elif iteration_count == 1:
                     print("⚠️  Warning: No EEG data received in first iteration. Waiting for data...")
 
@@ -294,11 +297,9 @@ if __name__ == "__main__":
 
                 previous_label = crt_label
 
-                # Filter the data (channels already removed from buffer)
-                filtered_data = filter.apply_filter_online(buffer)
-                
+                # Buffer already contains filtered data (filtered when added)
                 # Reshape for feature extraction: (1, n_channels, n_samples)
-                filtered_data_reshaped = filtered_data[np.newaxis, :, :]
+                filtered_data_reshaped = buffer[np.newaxis, :, :]
 
                 # Extract features (HybridLDA expects features, not raw data)
                 features = extract_features(filtered_data_reshaped, config.fs)  # Shape: (1, n_features)
@@ -367,6 +368,7 @@ if __name__ == "__main__":
                 print("STOPPING ONLINE PROCESSING")
                 print("="*60)
                 print(f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications):.2f} ms")
+                print(f"Filter latency: {filter.get_filter_latency():.2f} ms")
                 print(f"Total Predictions: {total_predictions}")
                 print(f"  Rejected: {total_rejected}")
                 print(f"  Accepted Successes: {total_successes}")
