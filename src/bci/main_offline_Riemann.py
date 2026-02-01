@@ -111,7 +111,7 @@ if __name__ == "__main__":
         root=current_wd,
         source_path=test_data_source_path,
         target_path=test_data_target_path,
-        resample=True,
+        resample=None,
     )
 
     print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
