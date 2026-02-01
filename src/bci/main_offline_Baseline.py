@@ -342,7 +342,7 @@ def run_baseline_comparison_pipeline():
         root=current_wd,
         source_path=test_data_source_path,
         target_path=test_data_target_path,
-        resample=True,
+        resample=None,
     )
 
     print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
@@ -391,6 +391,11 @@ def run_baseline_comparison_pipeline():
             baseline=None,
         )
 
+        # Skip files with no epochs (avoids "zero-size array" in concatenate_epochs)
+        if len(epochs) == 0:
+            print(f"  Skipping {filename}: no epochs after epoching.")
+            continue
+
         # Session ID for CV: same session = same fold (extract sub-XXX_ses-YYY from filename)
         session_id = _session_id_from_filename(filename)
 
@@ -406,7 +411,11 @@ def run_baseline_comparison_pipeline():
         epochs.metadata = metadata
         all_epochs_list.append(epochs)
 
-    # Combine all epochs
+    # Combine all epochs (require at least one non-empty Epochs object)
+    if not all_epochs_list:
+        raise ValueError(
+            "No epochs after preprocessing. All files had zero epochs (check events/event_id and epoching window)."
+        )
     combined_epochs = mne.concatenate_epochs(all_epochs_list)
     X_train = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
     y_train = combined_epochs.events[:, 2]  # Labels (e.g., 0, 1, 2)
