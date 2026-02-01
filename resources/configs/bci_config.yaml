@@ -42,8 +42,8 @@ subjects_ids: # Range if given 2 numbers | List if specific ids
 
 n_folds: 0
 random_state: 42
-finetune: "sub-P544" # Options: sub-P999, sub-P544
-test: "sub-P544" # Options: sub-P999, sub-P544
+finetune: "sub-P554" # Options: sub-P999, sub-P554
+test: "sub-P554" # Options: sub-P999, sub-P554
 target: "sub" # Folder name with all target subject data
 
 # Online
