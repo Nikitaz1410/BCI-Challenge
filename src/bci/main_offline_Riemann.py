@@ -111,7 +111,7 @@ if __name__ == "__main__":
         root=current_wd,
         source_path=test_data_source_path,
         target_path=test_data_target_path,
-        resample=False,
+        resample=True,
     )
 
     print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
@@ -129,9 +129,9 @@ if __name__ == "__main__":
             all_target_raws,
             all_target_events,
             target_metadata["filenames"],
-            num_p554=0,
+            num_p554=2,
             num_p999_general=0,
-            num_p999_dino=5,
+            num_p999_dino=13,
             shuffle=True,
         )
     )
@@ -381,7 +381,7 @@ if __name__ == "__main__":
                 filtered_raw,
                 events,
                 event_id=target_event_id,
-                tmin=0.5,
+                tmin=0.3,
                 tmax=3.0,
                 preload=True,
                 baseline=None,

@@ -29,7 +29,7 @@ channels:
   - "PO8"
   - "Oz"
 
-remove_channels: # Optional - Maybe for the future
+remove_channels: 
   - "Fp1"
   - "Fp2"
   - "T7"
