@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+    <pkg-ref id="org.labstreaminglayer.liblsl">
+        <bundle-version>
+            <bundle CFBundleShortVersionString="1.17" CFBundleVersion="1.17.5" id="org.labstreaminglayer.liblsl" path="lsl.framework"/>
+        </bundle-version>
+    </pkg-ref>
+    <product id="org.labstreaminglayer.liblsl" version="1.17"/>
+    <title></title>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="org.labstreaminglayer.liblsl"/>
+        </line>
+    </choices-outline>
+    <choice id="default" title="" versStr="1.17"/>
+    <choice id="org.labstreaminglayer.liblsl" title="" visible="false" customLocation="/Library/Frameworks">
+        <pkg-ref id="org.labstreaminglayer.liblsl"/>
+    </choice>
+    <pkg-ref id="org.labstreaminglayer.liblsl" version="1.17.0" onConclusion="none" installKBytes="1859" updateKBytes="0">#org.labstreaminglayer.liblsl.pkg</pkg-ref>
+</installer-gui-script>

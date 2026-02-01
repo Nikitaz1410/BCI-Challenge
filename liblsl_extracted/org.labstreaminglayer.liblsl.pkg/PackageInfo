@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<pkg-info overwrite-permissions="true" relocatable="false" identifier="org.labstreaminglayer.liblsl" postinstall-action="none" version="1.17.0" format-version="2" generator-version="InstallCmds-860.14 (24G419)" install-location="/Library/Frameworks" auth="root" preserve-xattr="true">
+    <payload numberOfFiles="29" installKBytes="1859"/>
+    <bundle path="./lsl.framework" id="org.labstreaminglayer.liblsl" CFBundleShortVersionString="1.17" CFBundleVersion="1.17.5"/>
+    <bundle-version>
+        <bundle id="org.labstreaminglayer.liblsl"/>
+    </bundle-version>
+    <upgrade-bundle>
+        <bundle id="org.labstreaminglayer.liblsl"/>
+    </upgrade-bundle>
+    <update-bundle/>
+    <atomic-update-bundle/>
+    <strict-identifier/>
+    <relocate/>
+</pkg-info>
