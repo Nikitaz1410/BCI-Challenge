@@ -11,6 +11,11 @@ import sys
 import time
 from pathlib import Path
 
+# Add src directory to Python path to allow imports
+src_dir = Path(__file__).parent.parent
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -19,7 +24,7 @@ try:
     from pylsl import StreamInlet, resolve_streams
 except ImportError:
     import subprocess
-    import sys
+    # sys is already imported at line 10
     print("⚠️  pylsl not found. Installing...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pylsl"], 
@@ -50,7 +55,23 @@ def extract_features(signals, sfreq):
 
 if __name__ == "__main__":
     # Load the config file
-    current_wd = Path.cwd()  # BCI-Challenge directory
+    # Detect project root: handle both workspace root and BCI-Challenge subdirectory
+    # Script is at: [workspace]/BCI-Challenge/src/bci/main_online_AdaptiveLDA.py
+    script_dir = Path(__file__).parent.parent.parent  # Goes up 3 levels from script
+    
+    # Check if we're in a BCI-Challenge subdirectory (workspace structure)
+    # The script is at: BCI-Challenge/src/bci/main_online_AdaptiveLDA.py
+    # So script_dir should be BCI-Challenge directory
+    # Check if script_dir contains "src" and "data" directories to confirm it's the project root
+    if (script_dir / "src").exists() and (script_dir / "data").exists():
+        # This is the BCI-Challenge project root
+        current_wd = script_dir
+    elif (script_dir / "BCI-Challenge" / "src").exists() and (script_dir / "BCI-Challenge" / "data").exists():
+        # We're in workspace root, need to go into BCI-Challenge
+        current_wd = script_dir / "BCI-Challenge"
+    else:
+        # Fallback: assume script_dir is correct
+        current_wd = script_dir
 
     try:
         config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
