@@ -1,22 +1,35 @@
 """
-Main offline pipeline for MIRepNet model.
+Offline Training and Testing Pipeline for the MIRepNet Foundation Model.
 
-This script finetunes and evaluates the MIRepNet foundation model.
-- Finetunes on Physionet data
-- Tests on separate test data (target subject)
-Make sure to set model: "mirepnet" in the config file (bci_config.yaml).
+This script compares multiple hyperparameter configurations using
+session-wise grouped cross-validation.
 
-The MIRepNet model:
-- Loads pretrained foundation weights
-- Finetunes on Physionet training data
-- Uses Euclidean Alignment (EA) preprocessing
-- Handles channel padding/interpolation automatically
+Pipeline:
+1. Load configuration from YAML
+2. Load target subject data
+3. Filter and preprocess the EEG data
+4. Create epochs with metadata for grouped CV (by session)
+5. For each model configuration:
+   - Perform K-Fold cross-validation
+   - Collect metrics
+6. Compare all configurations in a summary table
+
+Supported hyperparameter variations:
+- Batch size
+- Number of epochs
+- Learning rate
+- Optimizer (Adam, SGD)
+- Scheduler (Cosine, Step, None)
+
+Usage:
+    python main_offline_MIRepNet.py
 """
 
-import pickle
+import re
 import sys
 import time
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 # Add src directory to Python path to allow imports
 src_dir = Path(__file__).parent.parent
@@ -25,81 +38,314 @@ if str(src_dir) not in sys.path:
 
 import mne
 import numpy as np
+import pandas as pd
+from sklearn.model_selection import GroupKFold
 
 # Evaluation
 from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
-from bci.loading.loading import load_physionet_data, load_target_subject_data
-from bci.preprocessing.artefact_removal import ArtefactRemoval
+from bci.loading.loading import (
+    create_subject_train_set,
+    load_target_subject_data,
+)
 
 # Preprocessing
-from bci.preprocessing.filters import (
-    Filter,
-)
-from bci.preprocessing.windows import epochs_to_windows
+from bci.preprocessing.artefact_removal import ArtefactRemoval
+from bci.preprocessing.filters import Filter
+from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
 
 # Utils
 from bci.utils.bci_config import load_config
-from bci.utils.utils import (
-    choose_model,
-)  # Constructs the model of your choosing (can be easily extended)
+from bci.utils.utils import choose_model
 
 
-def _reject_bad_epochs_with_subject_ids(
-    ar: ArtefactRemoval,
-    epochs_data: np.ndarray,
-    epochs_labels: np.ndarray,
-    subject_ids: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if ar.rejection_threshold is None:
-        raise ValueError("Rejection thresholds have not been computed yet.")
-    if epochs_data.shape[0] != epochs_labels.shape[0]:
-        raise ValueError("Labels must match number of epochs.")
-    if epochs_data.shape[0] != subject_ids.shape[0]:
-        raise ValueError("Subject IDs must match number of epochs.")
+def _session_id_from_filename(filename: str) -> str:
+    """
+    Extract session identifier from BIDS-style filename for CV grouping.
 
-    good_mask = ~np.any(np.abs(epochs_data) > ar.rejection_threshold, axis=(1, 2))
-    rejected = epochs_data.shape[0] - int(good_mask.sum())
-    print(
-        f"Rejected {rejected} bad epochs out of {epochs_data.shape[0]} total epochs."
-    )
-
-    return (
-        epochs_data[good_mask],
-        epochs_labels[good_mask],
-        subject_ids[good_mask],
-    )
+    E.g. "sub-P999_ses-S002_task-dino_run-001_eeg_raw" -> "sub-P999_ses-S002".
+    Multiple files (runs) from the same session get the same ID so they stay
+    in the same CV fold. If the pattern is not found, returns the full filename
+    (one file = one group).
+    """
+    # Strip _raw suffix if present
+    base = filename.replace("_raw", "").strip("_")
+    match = re.match(r"(sub-[^_]+_ses-[^_]+)", base)
+    if match:
+        return match.group(1)
+    return filename
 
 
-def _validate_subject_ids(
-    epochs_data: np.ndarray,
-    epochs_labels: np.ndarray,
-    subject_ids: np.ndarray,
-    context: str,
-) -> None:
-    if epochs_data.shape[0] != epochs_labels.shape[0]:
-        raise ValueError(f"{context}: labels must match number of epochs.")
-    if epochs_data.shape[0] != subject_ids.shape[0]:
-        raise ValueError(f"{context}: subject IDs must match number of epochs.")
-    if subject_ids.ndim != 1:
-        raise ValueError(f"{context}: subject IDs must be a 1D array.")
+# =============================================================================
+# Model Configurations to Compare
+# =============================================================================
+MODEL_CONFIGURATIONS: List[Dict[str, Any]] = [
+    # Default configuration
+    {
+        "name": "MIRepNet (Default)",
+        "batch_size": 32,
+        "epochs": 10,
+        "lr": 0.001,
+        "optimizer": "adam",
+        "scheduler": "cosine",
+    },
+    # Higher learning rate
+    {
+        "name": "MIRepNet (LR=0.005)",
+        "batch_size": 32,
+        "epochs": 10,
+        "lr": 0.005,
+        "optimizer": "adam",
+        "scheduler": "cosine",
+    },
+    # Lower learning rate
+    {
+        "name": "MIRepNet (LR=0.0005)",
+        "batch_size": 32,
+        "epochs": 10,
+        "lr": 0.0005,
+        "optimizer": "adam",
+        "scheduler": "cosine",
+    },
+    # More epochs
+    {
+        "name": "MIRepNet (20 epochs)",
+        "batch_size": 32,
+        "epochs": 20,
+        "lr": 0.001,
+        "optimizer": "adam",
+        "scheduler": "cosine",
+    },
+    # Larger batch size
+    {
+        "name": "MIRepNet (BS=64)",
+        "batch_size": 64,
+        "epochs": 10,
+        "lr": 0.001,
+        "optimizer": "adam",
+        "scheduler": "cosine",
+    },
+    # SGD optimizer
+    {
+        "name": "MIRepNet (SGD)",
+        "batch_size": 32,
+        "epochs": 10,
+        "lr": 0.001,
+        "optimizer": "sgd",
+        "scheduler": "cosine",
+    },
+    # Step scheduler
+    {
+        "name": "MIRepNet (Step Sched.)",
+        "batch_size": 32,
+        "epochs": 10,
+        "lr": 0.001,
+        "optimizer": "adam",
+        "scheduler": "step",
+    },
+    # No scheduler
+    {
+        "name": "MIRepNet (No Sched.)",
+        "batch_size": 32,
+        "epochs": 10,
+        "lr": 0.001,
+        "optimizer": "adam",
+        "scheduler": "none",
+    },
+]
 
 
-def _apply_mask_with_subject_ids(
-    epochs_data: np.ndarray,
-    epochs_labels: np.ndarray,
-    subject_ids: np.ndarray,
-    mask: np.ndarray,
-    context: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if mask.shape[0] != epochs_data.shape[0]:
-        raise ValueError(f"{context}: mask must match number of epochs.")
-    _validate_subject_ids(epochs_data, epochs_labels, subject_ids, context)
-    return epochs_data[mask], epochs_labels[mask], subject_ids[mask]
+def run_cv_for_config(
+    model_config: Dict[str, Any],
+    combined_epochs: mne.Epochs,
+    groups: np.ndarray,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    config: Any,
+    n_classes: int,
+    channel_names: List[str],
+    n_folds: int = 5,
+    use_artifact_rejection: bool = False,
+) -> Dict[str, Any]:
+    """
+    Run cross-validation for a single MIRepNet model configuration.
 
-if __name__ == "__main__":
-    # Load the config file
+    Parameters
+    ----------
+    model_config : dict
+        Model configuration with hyperparameters
+    combined_epochs : mne.Epochs
+        Combined epochs for all training data
+    groups : np.ndarray
+        Group labels for CV (e.g., session/file names)
+    X_train : np.ndarray
+        Training data (n_epochs, n_channels, n_times)
+    y_train : np.ndarray
+        Training labels
+    config : EEGConfig
+        Configuration object with window_size, step_size, etc.
+    n_classes : int
+        Number of classes
+    channel_names : list
+        List of channel names after preprocessing
+    n_folds : int
+        Number of CV folds
+    use_artifact_rejection : bool
+        Whether to apply artifact rejection (default False for deep learning)
+
+    Returns
+    -------
+    dict
+        Dictionary with model name and mean/std metrics
+    """
+    config_name = model_config["name"]
+    print(f"\n{'='*60}")
+    print(f"Evaluating: {config_name}")
+    print(f"{'='*60}")
+
+    gkf = GroupKFold(n_splits=n_folds)
+    cv_metrics_list = []
+    fold_times = []
+
+    for fold_idx, (train_idx, val_idx) in enumerate(
+        gkf.split(X_train, y_train, groups=groups)
+    ):
+        fold_start = time.time()
+        print(f"  Fold {fold_idx + 1}/{n_folds}...", end=" ")
+
+        # Extract windowed epochs for this fold
+        fold_windowed_epochs = epochs_windows_from_fold(
+            combined_epochs,
+            groups,
+            train_idx,
+            val_idx,
+            window_size=config.window_size,
+            step_size=config.step_size,
+        )
+
+        X_train_fold = fold_windowed_epochs["X_train"]
+        y_train_fold = fold_windowed_epochs["y_train"]
+        X_val_fold = fold_windowed_epochs["X_val"]
+        y_val_fold = fold_windowed_epochs["y_val"]
+
+        # Optional: Artifact removal within each fold
+        # Deep learning models are generally more robust to artifacts,
+        # so this is disabled by default
+        if use_artifact_rejection:
+            ar = ArtefactRemoval()
+            ar.get_rejection_thresholds(X_train_fold, config)
+
+            X_train_clean, y_train_clean = ar.reject_bad_epochs(
+                X_train_fold, y_train_fold
+            )
+            X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
+
+            # Skip if no data left after artifact rejection
+            if len(X_train_clean) == 0 or len(X_val_clean) == 0:
+                print("Skipped (no data after AR)")
+                continue
+        else:
+            X_train_clean, y_train_clean = X_train_fold, y_train_fold
+            X_val_clean, y_val_clean = X_val_fold, y_val_fold
+
+        # Skip if no data available
+        if len(X_train_clean) == 0 or len(X_val_clean) == 0:
+            print("Skipped (no data)")
+            continue
+
+        # Create and train the MIRepNet model
+        clf = choose_model(
+            "mirepnet",
+            {
+                "batch_size": model_config["batch_size"],
+                "epochs": model_config["epochs"],
+                "lr": model_config["lr"],
+                "optimizer": model_config["optimizer"],
+                "scheduler": model_config["scheduler"],
+                "actual_channels": channel_names,
+            },
+        )
+
+        try:
+            clf.fit(X_train_clean, y_train_clean)
+
+            # Evaluate on validation fold
+            fold_predictions = clf.predict(X_val_clean)
+            fold_probabilities = clf.predict_proba(X_val_clean)
+
+            # Compute metrics
+            fold_metrics = compile_metrics(
+                y_true=y_val_clean,
+                y_pred=fold_predictions,
+                y_prob=fold_probabilities,
+                timings=None,
+                n_classes=n_classes,
+            )
+
+            cv_metrics_list.append(fold_metrics)
+            fold_time = time.time() - fold_start
+            fold_times.append(fold_time)
+            print(f"Acc: {fold_metrics['Acc.']:.4f} ({fold_time:.1f}s)")
+
+        except Exception as e:
+            print(f"Error: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    # Aggregate results
+    if len(cv_metrics_list) == 0:
+        return {
+            "Model": config_name,
+            "Acc.": "N/A",
+            "B. Acc.": "N/A",
+            "F1 Score": "N/A",
+            "ECE": "N/A",
+            "Brier": "N/A",
+        }
+
+    # Compute mean and std for each metric
+    result = {"Model": config_name}
+    metric_keys = ["Acc.", "B. Acc.", "F1 Score", "ECE", "Brier"]
+
+    for key in metric_keys:
+        values = [m[key] for m in cv_metrics_list if key in m]
+        if values:
+            mean_val = np.mean(values)
+            std_val = np.std(values)
+            result[key] = f"{mean_val:.4f} +/- {std_val:.4f}"
+        else:
+            result[key] = "N/A"
+
+    # Add timing info
+    result["Avg. Fold Time (s)"] = f"{np.mean(fold_times):.1f}"
+
+    return result
+
+
+def run_mirepnet_comparison_pipeline(
+    configurations: Optional[List[Dict[str, Any]]] = None,
+    use_artifact_rejection: bool = False,
+):
+    """
+    Main pipeline that compares multiple MIRepNet configurations using
+    session-wise grouped cross-validation.
+
+    Parameters
+    ----------
+    configurations : list, optional
+        List of model configurations to evaluate. If None, uses MODEL_CONFIGURATIONS.
+    use_artifact_rejection : bool
+        Whether to apply artifact rejection (default False for deep learning)
+    """
+    # Use default configurations if none provided
+    if configurations is None:
+        configurations = MODEL_CONFIGURATIONS
+
+    # =========================================================================
+    # 1. Load Configuration
+    # =========================================================================
     current_wd = Path.cwd()  # BCI-Challenge directory
 
     try:
@@ -107,299 +353,306 @@ if __name__ == "__main__":
         print(f"Loading configuration from: {config_path}")
         config = load_config(config_path)
         print("Configuration loaded successfully!")
-
     except Exception as e:
-        print(f"❌ Error loading config: {e}")
+        print(f"Error loading config: {e}")
         sys.exit(1)
 
     # Initialize variables
     np.random.seed(config.random_state)
-    metrics_table = MetricsTable()
-    # MIRepNet model arguments - can be customized here
-    model_args = {
-        "batch_size": 8,
-        "epochs": 10,
-        "lr": 0.001,
-        "weight_decay": 1e-6,
-        "optimizer": "adam",
-        "scheduler": "cosine",
-        "device": "auto",
-        "actual_channels": config.channels if hasattr(config, 'channels') and config.channels else None,
-    }  # args for the model chooser (what the model constructor needs)
 
-    # MIRepNet expects 250Hz sampling rate (trained on BNCI2014004 at 250Hz)
-    # Override config.fs to 250Hz for filter design
-    mirepnet_fs = 250.0
-    # Temporarily override config.fs for MIRepNet
-    original_fs = config.fs
-    config.fs = mirepnet_fs
-    filter = Filter(config, online=False)
-    # Restore original fs in config (in case it's used elsewhere)
-    config.fs = original_fs
+    # Set number of folds for CV (override config if needed)
+    n_folds = max(config.n_folds, 5)  # Use at least 5 folds for comparison
+    print(f"Using {n_folds}-fold cross-validation grouped by session.")
 
-    test_data_source_path = (
-        current_wd / "data" / config.test
-    )  # Path can be defined in config file
+    # Initialize filter
+    filter_obj = Filter(config, online=False)
 
-    test_data_target_path = (
-        current_wd / "data" / "datasets" / config.test
-    )  # Path can be defined in config file
+    # Setup paths
+    test_data_source_path = current_wd / "data" / "eeg" / config.target
+    test_data_target_path = current_wd / "data" / "datasets" / config.target
 
-    use_test = True  # Whether to test on target subject data
-    timings = {}
+    # =========================================================================
+    # 2. Load Data
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("LOADING DATA")
+    print("=" * 60)
 
-    # Load training data from Physionet
-    x_raw_train, events_train, event_id_train, sub_ids_train = load_physionet_data(
-        subjects=config.subjects, root=current_wd, config=config
-    )
-    print(f"Loaded {len(x_raw_train)} subjects from Physionet for training.")
-
-    # Load target subject data for testing
-    x_raw_test, events_test, event_id_test, sub_ids_test = load_target_subject_data(
+    # Load all target subject data
+    (
+        all_target_raws,
+        all_target_events,
+        target_event_id,
+        target_sub_ids,
+        target_metadata,
+    ) = load_target_subject_data(
         root=current_wd,
         source_path=test_data_source_path,
         target_path=test_data_target_path,
-        config=config,
-        task_type="arrow",
-        limit=0,
+        resample=None,
     )
-    print(f"Loaded {len(x_raw_test)} target subject sessions for testing.")
 
-    if len(x_raw_test) == 0:
-        print("⚠️ No test data found. Skipping evaluation.")
-        use_test = False
+    print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
 
-    # Training: Filter the data and create epochs
-    # Note: MIRepNet model expects 250Hz sampling rate (trained on BNCI2014004 at 250Hz)
-    # We need to resample both Physionet (160Hz) and target subject data to 250Hz
-    target_sfreq = 250.0
-    all_train_windows = []
-    all_train_labels = []
-    all_train_subject_ids = []
-    for raw, events, sub_id in zip(x_raw_train, events_train, sub_ids_train):
-        # Resample Physionet data to 250Hz for MIRepNet
-        if raw.info['sfreq'] != target_sfreq:
-            print(f"Resampling Physionet data from {raw.info['sfreq']}Hz to {target_sfreq}Hz for MIRepNet")
-            raw.resample(target_sfreq)
-        
-        # Filter the data
-        filtered_raw = filter.apply_filter_offline(raw)
+    # Create training set from target subject data (use all available data for CV)
+    x_raw_train, events_train, train_filenames, sub_ids_train, train_indices = (
+        create_subject_train_set(
+            config,
+            all_target_raws,
+            all_target_events,
+            target_metadata["filenames"],
+            num_p554=2,
+            num_p999_general=4,  # Include all general sessions
+            num_p999_dino=13,
+            shuffle=True,
+        )
+    )
+    print(f"Using {len(x_raw_train)} sessions for cross-validation.")
 
-        # Create the epochs
+    # =========================================================================
+    # 3. Preprocessing: Filter and Create Epochs
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("PREPROCESSING")
+    print("=" * 60)
+
+    all_epochs_list = []
+    channel_names_after_preprocessing = None
+
+    for raw, events, sub_id, filename in zip(
+        x_raw_train, events_train, sub_ids_train, train_filenames
+    ):
+        # FILTERING: Apply bandpass filter
+        filtered_raw = raw.copy()
+        filtered_raw.apply_function(filter_obj.apply_filter_offline)
+
+        # Use all channels (no channel removal for MIRepNet)
+
+        # Store channel names after preprocessing (for MIRepNet)
+        if channel_names_after_preprocessing is None:
+            channel_names_after_preprocessing = filtered_raw.ch_names.copy()
+
+        # EPOCHING: Create epochs with metadata for CV
         epochs = mne.Epochs(
             filtered_raw,
             events,
-            event_id=event_id_train,
-            tmin=0.5,
-            tmax=4.0,
+            event_id=target_event_id,
+            tmin=0.3,  # Start at 0.3s to avoid VEP/ERP from visual cues
+            tmax=3.0,
             preload=True,
             baseline=None,
         )
 
-        # Extract windowed epochs per subject to keep subject IDs aligned
-        X_subject_windows, y_subject_windows = epochs_to_windows(
-            epochs,
+        # Skip files with no epochs (avoids "zero-size array" in concatenate_epochs)
+        if len(epochs) == 0:
+            print(f"  Skipping {filename}: no epochs after epoching.")
+            continue
+
+        # Session ID for CV: same session = same fold (extract sub-XXX_ses-YYY from filename)
+        session_id = _session_id_from_filename(filename)
+
+        # Attach metadata for grouped CV (by session)
+        metadata = pd.DataFrame(
+            {
+                "subject_id": [sub_id] * len(epochs),
+                "session": [session_id] * len(epochs),  # Group by session (not by file)
+                "filename": [filename] * len(epochs),
+                "condition": epochs.events[:, 2],
+            }
+        )
+        epochs.metadata = metadata
+        all_epochs_list.append(epochs)
+
+    # Combine all epochs (require at least one non-empty Epochs object)
+    if not all_epochs_list:
+        raise ValueError(
+            "No epochs after preprocessing. All files had zero epochs (check events/event_id and epoching window)."
+        )
+    combined_epochs = mne.concatenate_epochs(all_epochs_list)
+    X_train = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
+    y_train = combined_epochs.events[:, 2]  # Labels (e.g., 0, 1, 2)
+
+    # Groups for CV: by session (multiple files can share one session)
+    groups = combined_epochs.metadata["session"].values
+
+    # Get unique sessions
+    unique_sessions = np.unique(groups)
+    n_folds = min(n_folds, len(unique_sessions))  # Can't have more folds than sessions
+
+    print(f"Training data shape: {X_train.shape}")
+    print(f"Labels distribution: {np.unique(y_train, return_counts=True)}")
+    print(f"Number of sessions (CV groups): {len(unique_sessions)}")
+    print(f"Sessions: {list(unique_sessions)}")
+    print(f"Adjusted folds for CV: {n_folds}")
+    print(f"Channel names for MIRepNet: {channel_names_after_preprocessing}")
+
+    # =========================================================================
+    # 4. Run Cross-Validation for Each Configuration
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("COMPARING MIREPNET CONFIGURATIONS")
+    print("=" * 60)
+    print(f"Total configurations to evaluate: {len(configurations)}")
+    print(f"Artifact rejection: {'Enabled' if use_artifact_rejection else 'Disabled'}")
+
+    all_results = []
+    n_classes = len(target_event_id)
+
+    for config_idx, model_config in enumerate(configurations):
+        print(f"\n[{config_idx + 1}/{len(configurations)}] ", end="")
+
+        result = run_cv_for_config(
+            model_config=model_config,
+            combined_epochs=combined_epochs,
+            groups=groups,
+            X_train=X_train,
+            y_train=y_train,
+            config=config,
+            n_classes=n_classes,
+            channel_names=channel_names_after_preprocessing,
+            n_folds=n_folds,
+            use_artifact_rejection=use_artifact_rejection,
+        )
+
+        all_results.append(result)
+
+    # =========================================================================
+    # 5. Sort by F1 Score and Display Comparison Table
+    # =========================================================================
+    def _f1_sort_key(result: Dict[str, Any]) -> float:
+        """Extract mean F1 score for sorting; use -1 for N/A so they sort last."""
+        f1_str = result.get("F1 Score", "N/A")
+        if f1_str == "N/A":
+            return -1.0
+        try:
+            return float(f1_str.split("+/-")[0].strip())
+        except (ValueError, IndexError):
+            return -1.0
+
+    all_results_sorted = sorted(all_results, key=_f1_sort_key, reverse=True)
+
+    print("\n" + "=" * 80)
+    print("MIREPNET MODEL COMPARISON RESULTS (sorted by F1 Score, descending)")
+    print("=" * 80)
+    print(f"Cross-Validation: {n_folds}-fold, grouped by session (sub-XXX_ses-YYY)")
+    print(f"Total sessions: {len(unique_sessions)}")
+    print(f"Total epochs: {len(X_train)}")
+    print("=" * 80)
+
+    # Create comparison table (sorted by F1 score)
+    comparison_table = MetricsTable()
+    comparison_table.add_rows(all_results_sorted)
+    comparison_table.display()
+
+    # Also create a pandas DataFrame for easier analysis (sorted)
+    df_results = pd.DataFrame(all_results_sorted)
+
+    # =========================================================================
+    # 6. Find Best Configuration and Train Final Model
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("BEST CONFIGURATION (by F1 Score)")
+    print("=" * 60)
+
+    # Best is first in sorted list (by F1 score)
+    best_result = all_results_sorted[0] if all_results_sorted else None
+    best_f1 = _f1_sort_key(best_result) if best_result else -1.0
+    best_config = None
+    best_config_name = best_result.get("Model", "") if best_result else ""
+
+    if best_result and best_f1 >= 0:
+        for model_config in configurations:
+            if model_config["name"] == best_config_name:
+                best_config = model_config
+                break
+
+    if best_config:
+        print(f"Best model: {best_config_name}")
+        print(f"Mean CV F1 Score: {best_f1:.4f}")
+        print(f"Configuration: {best_config}")
+
+        # Train final model with best configuration on all data
+        print("\nTraining final model with best configuration on all data...")
+
+        X_train_windows, y_train_windows, _ = epochs_to_windows(
+            combined_epochs,
+            groups,
             window_size=config.window_size,
             step_size=config.step_size,
         )
-        if X_subject_windows.shape[0] == 0:
-            continue
 
-        all_train_windows.append(X_subject_windows)
-        all_train_labels.append(y_subject_windows)
-        all_train_subject_ids.append(
-            np.full(X_subject_windows.shape[0], sub_id, dtype=np.int64)
-        )
+        print(f"Training on {len(X_train_windows)} windows...")
 
-    if len(all_train_windows) == 0:
-        raise RuntimeError("No training windows extracted after preprocessing.")
-
-    X_train_windows = np.concatenate(all_train_windows, axis=0)
-    y_train_windows = np.concatenate(all_train_labels, axis=0)
-    subject_ids_train = np.concatenate(all_train_subject_ids, axis=0)
-    _validate_subject_ids(
-        X_train_windows, y_train_windows, subject_ids_train, "train windows"
-    )
-
-    ar = ArtefactRemoval()
-    ar.get_rejection_thresholds(X_train_windows, config)
-    X_train_clean, y_train_clean, subject_ids_train_clean = (
-        _reject_bad_epochs_with_subject_ids(
-            ar, X_train_windows, y_train_windows, subject_ids_train
-        )
-    )
-
-    # Get unique labels from training data (used as reference for label mapping)
-    train_labels_unique = np.unique(y_train_clean)
-    train_labels_sorted = np.sort(train_labels_unique)
-    
-    # Create label mapping: original label -> remapped label (0-indexed consecutive)
-    # This ensures consistent labeling even if original labels are not 0-indexed
-    label_mapping = {old_label: idx for idx, old_label in enumerate(train_labels_sorted)}
-    reverse_label_mapping = {idx: old_label for old_label, idx in label_mapping.items()}
-    
-    print(f"\nLabel remapping:")
-    print(f"  Original training labels: {sorted(train_labels_sorted.tolist())}")
-    print(f"  Remapping to: {list(range(len(train_labels_sorted)))}")
-    print(f"  Mapping: {label_mapping}")
-    
-    # Remap training labels to 0-indexed consecutive integers
-    y_train_remapped = np.array([label_mapping[label] for label in y_train_clean], dtype=np.int64)
-    
-    print(f"  Training labels after remapping: {sorted(np.unique(y_train_remapped).tolist())}")
-
-    # Construct Final Model
-    clf = choose_model(config.model, model_args)
-
-    # Train the final model on all clean training data (using remapped labels)
-    print("\nTraining final model on all Physionet training data...")
-    start_train_time = time.time() * 1000
-    clf.fit(X_train_clean, y_train_remapped, subject_ids=subject_ids_train_clean)
-    end_train_time = time.time() * 1000
-
-    # Test on the holdout test set
-    if use_test:
-        # Prepare test data - Filter, Epoch and Window, Remove Artifacts
-        # Note: MIRepNet expects 250Hz, so resample test data to match
-        target_sfreq = 250.0
-        all_test_windows = []
-        all_test_labels = []
-        all_test_subject_ids = []
-        start_total_time = time.time() * 1000
-        for raw, events, sub_id in zip(x_raw_test, events_test, sub_ids_test):
-            # Resample test data to 250Hz for MIRepNet
-            # Note: load_target_subject_data resamples to 160Hz, but MIRepNet needs 250Hz
-            if raw.info['sfreq'] != target_sfreq:
-                print(f"Resampling test data from {raw.info['sfreq']}Hz to {target_sfreq}Hz for MIRepNet")
-                raw.resample(target_sfreq)
-            
-            # Filter the data
-            filtered_raw = filter.apply_filter_offline(raw)
-
-            # Create the epochs for testing
-            epochs = mne.Epochs(
-                filtered_raw,
-                events,
-                event_id=event_id_test,
-                tmin=0.5,
-                tmax=4.0,
-                preload=True,
-                baseline=None,
-            )
-
-            # Extract windowed epochs per subject to keep subject IDs aligned
-            X_subject_windows, y_subject_windows = epochs_to_windows(
-                epochs,
-                window_size=config.window_size,
-                step_size=config.step_size,
-            )
-            if X_subject_windows.shape[0] == 0:
-                continue
-
-            all_test_windows.append(X_subject_windows)
-            all_test_labels.append(y_subject_windows)
-            all_test_subject_ids.append(
-                np.full(X_subject_windows.shape[0], sub_id, dtype=np.int64)
-            )
-
-        if len(all_test_windows) == 0:
-            raise RuntimeError("No test windows extracted after preprocessing.")
-
-        X_test_windows = np.concatenate(all_test_windows, axis=0)
-        y_test_windows = np.concatenate(all_test_labels, axis=0)
-        subject_ids_test = np.concatenate(all_test_subject_ids, axis=0)
-        _validate_subject_ids(
-            X_test_windows, y_test_windows, subject_ids_test, "test windows"
-        )
-
-        # Also clean test data using the same thresholds
-        X_test_clean, y_test_clean, subject_ids_test_clean = (
-            _reject_bad_epochs_with_subject_ids(
-                ar, X_test_windows, y_test_windows, subject_ids_test
-            )
-        )
-
-        # Remap test labels using the same mapping as training
-        test_labels_unique = np.unique(y_test_clean)
-        print(f"\nTest labels before remapping: {sorted(test_labels_unique.tolist())}")
-        
-        # Check if test has any labels not in training
-        test_labels_not_in_training = set(test_labels_unique) - set(train_labels_sorted)
-        if test_labels_not_in_training:
-            print(f"⚠️  WARNING: Test data contains labels not in training: {sorted(test_labels_not_in_training)}")
-            print(f"   These labels will be mapped to closest training label or removed.")
-            # For now, we'll skip samples with unknown labels
-            valid_mask = np.isin(y_test_clean, train_labels_sorted)
-            if not np.all(valid_mask):
-                print(f"   Removing {np.sum(~valid_mask)} samples with unknown labels from test set.")
-                (
-                    X_test_clean,
-                    y_test_clean,
-                    subject_ids_test_clean,
-                ) = _apply_mask_with_subject_ids(
-                    X_test_clean,
-                    y_test_clean,
-                    subject_ids_test_clean,
-                    valid_mask,
-                    "test label filtering",
-                )
-        
-        # Remap test labels using the same mapping
-        y_test_remapped = np.array([label_mapping[label] for label in y_test_clean], dtype=np.int64)
-        print(f"  Test labels after remapping: {sorted(np.unique(y_test_remapped).tolist())}")
-
-        # Evaluate on holdout test set (using remapped labels)
-        print("\nEvaluating on holdout test set...")
-        start_eval_time = time.time() * 1000
-        test_predictions = clf.predict(
-            X_test_clean, subject_ids=subject_ids_test_clean
-        )
-        end_eval_time = time.time() * 1000
-        test_probabilities = clf.predict_proba(
-            X_test_clean, subject_ids=subject_ids_test_clean
-        )
-
-        end_total_time = time.time() * 1000
-
-        # Remap predictions back to original label space for metrics/comparison
-        # (though metrics should work fine with remapped labels)
-        test_predictions_original = np.array([reverse_label_mapping[pred] for pred in test_predictions])
-
-        # Compute metrics for test set (using remapped labels for consistency)
-
-        test_metrics = compile_metrics(
-            y_true=y_test_remapped,
-            y_pred=test_predictions,
-            y_prob=test_probabilities,
-            timings={
-                "train_time": end_train_time - start_train_time,
-                "infer_latency": (end_eval_time - start_eval_time)
-                / max(1, len(y_test_clean)),
-                "total_latency": (end_total_time - start_total_time)
-                / max(1, len(y_test_clean)),
-                "filter_latency": filter.get_filter_latency(),
+        final_clf = choose_model(
+            "mirepnet",
+            {
+                "batch_size": best_config["batch_size"],
+                "epochs": best_config["epochs"],
+                "lr": best_config["lr"],
+                "optimizer": best_config["optimizer"],
+                "scheduler": best_config["scheduler"],
+                "actual_channels": channel_names_after_preprocessing,
             },
-            n_classes=len(train_labels_sorted),
         )
 
-        # Add dataset label after computing metrics
-        test_metrics["Dataset"] = "Test (Holdout)"
+        final_clf.fit(X_train_windows, y_train_windows)
 
-        metrics_table.add_rows([test_metrics])
-        print("\n" + "=" * 60)
-        print("FINAL RESULTS")
-        print("=" * 60)
-        metrics_table.display()
+        # Save the best model
+        model_dir = current_wd / "resources" / "models"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        model_path = model_dir / "mirepnet_best_model.pt"
+        final_clf.save(str(model_path))
+        print(f"Best model saved to: {model_path}")
 
-    # Save the Model and other Objects
-    # MIRepNet uses .pt extension for PyTorch models
-    model_path = Path.cwd() / "resources" / "models" / "mirepnet_model.pt"
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    clf.save(str(model_path))
-    print(f"Model saved to: {model_path}")
+    return all_results, df_results
 
-    # Save the Artefact Removal Object
-    ar_path = Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
-    with open(ar_path, "wb") as f:
-        pickle.dump(ar, f)
-    print(f"Artefact Removal object saved to: {ar_path}")
+
+def run_single_mirepnet_config(
+    batch_size: int = 32,
+    epochs: int = 10,
+    lr: float = 0.001,
+    optimizer: str = "adam",
+    scheduler: str = "cosine",
+    use_artifact_rejection: bool = False,
+):
+    """
+    Run training and evaluation for a single MIRepNet configuration.
+
+    This is a convenience function for users who want to run a single
+    configuration without comparing multiple hyperparameter settings.
+
+    Parameters
+    ----------
+    batch_size : int
+        Batch size for training (default: 32)
+    epochs : int
+        Number of training epochs (default: 10)
+    lr : float
+        Learning rate (default: 0.001)
+    optimizer : str
+        Optimizer to use: 'adam' or 'sgd' (default: 'adam')
+    scheduler : str
+        Learning rate scheduler: 'cosine', 'step', or 'none' (default: 'cosine')
+    use_artifact_rejection : bool
+        Whether to apply artifact rejection (default False for deep learning)
+    """
+    single_config = [
+        {
+            "name": f"MIRepNet (BS={batch_size}, E={epochs}, LR={lr})",
+            "batch_size": batch_size,
+            "epochs": epochs,
+            "lr": lr,
+            "optimizer": optimizer,
+            "scheduler": scheduler,
+        }
+    ]
+
+    return run_mirepnet_comparison_pipeline(
+        configurations=single_config,
+        use_artifact_rejection=use_artifact_rejection,
+    )
+
+
+if __name__ == "__main__":
+    # Run the full comparison pipeline
+    all_results, df_results = run_mirepnet_comparison_pipeline()
