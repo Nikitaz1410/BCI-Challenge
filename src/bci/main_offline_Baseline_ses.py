@@ -29,7 +29,6 @@ Usage:
     python main_offline_Baseline.py
 """
 
-import pickle
 import random
 import re
 import sys
@@ -48,7 +47,7 @@ import pandas as pd
 from sklearn.model_selection import GroupKFold
 
 # Evaluation
-from bci.Evaluation.metrics import MetricsTable, compile_metrics
+from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
 from bci.loading.loading import (
@@ -58,12 +57,9 @@ from bci.loading.loading import (
 )
 
 # Preprocessing
-from bci.Preprocessing.artefact_removal import ArtefactRemoval
-from bci.Preprocessing.filters import Filter
-from bci.Preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
-
-# Models - HybridLDA wrapper for testing different features
-from bci.Models.AdaptiveLDA_modules.hybrid_lda_wrapper import HybridLDAWrapper
+from bci.preprocessing.artefact_removal import ArtefactRemoval
+from bci.preprocessing.filters import Filter
+from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
 
 # Utils
 from bci.utils.bci_config import load_config
@@ -147,31 +143,6 @@ MODEL_CONFIGURATIONS: List[Dict[str, Any]] = [
         "classifier": "rf",
         "scale": True,
     },
-    # HybridLDA with different feature types
-    {
-        "name": "HybridLDA + Log-Bandpower",
-        "features": "log_bandpower",
-        "classifier": "hybrid_lda",
-        "scale": False,
-    },
-    {
-        "name": "HybridLDA + CSP",
-        "features": "csp",
-        "classifier": "hybrid_lda",
-        "scale": False,
-    },
-    {
-        "name": "HybridLDA + Welch-Bandpower",
-        "features": "welch_bandpower",
-        "classifier": "hybrid_lda",
-        "scale": False,
-    },
-    {
-        "name": "HybridLDA + CSP+BP",
-        "features": ["csp", "welch_bandpower"],
-        "classifier": "hybrid_lda",
-        "scale": False,
-    },
 ]
 
 
@@ -220,12 +191,16 @@ def run_cv_for_config(
     gkf = GroupKFold(n_splits=n_folds)
     cv_metrics_list = []
     fold_times = []
+    per_session_results = []  # [(test_session, metrics), ...]
 
     for fold_idx, (train_idx, val_idx) in enumerate(
         gkf.split(X_train, y_train, groups=groups)
     ):
         fold_start = time.time()
-        print(f"  Fold {fold_idx + 1}/{n_folds}...", end=" ")
+        # Identify which session(s) are in the test fold
+        test_sessions = np.unique(groups[val_idx]).tolist()
+        test_session_str = ", ".join(test_sessions) if test_sessions else "?"
+        print(f"  Fold {fold_idx + 1}/{n_folds} (test: {test_session_str})...", end=" ")
 
         # Extract windowed epochs for this fold
         fold_windowed_epochs = epochs_windows_from_fold(
@@ -256,39 +231,23 @@ def run_cv_for_config(
             print("Skipped (no data after AR)")
             continue
 
+        # Create and train the model
+        clf = choose_model(
+            "baseline",
+            {
+                "features": model_config["features"],
+                "classifier": model_config["classifier"],
+                "scale": model_config["scale"],
+                "random_state": config.random_state,
+            },
+        )
+
         try:
-            # Handle HybridLDA differently (uses wrapper with feature extraction)
-            if model_config["classifier"] == "hybrid_lda":
-                clf = HybridLDAWrapper(
-                    features=model_config["features"],
-                    move_threshold=0.5,
-                    reg=1e-2,
-                    shrinkage_alpha=0.1,
-                    uc_mu=0.4 * 2**-6,
-                    sfreq=config.fs  # Pass sampling frequency
-                )
-                clf.fit(X_train_clean, y_train_clean)
-                
-                # Evaluate on validation fold
-                fold_predictions = clf.predict(X_val_clean)
-                fold_probabilities = clf.predict_proba(X_val_clean)
-            else:
-                # Baseline models path (existing code)
-                clf = choose_model(
-                    "baseline",
-                    {
-                        "features": model_config["features"],
-                        "classifier": model_config["classifier"],
-                        "scale": model_config["scale"],
-                        "random_state": config.random_state,
-                    },
-                )
-                
-                clf.fit(X_train_clean, y_train_clean)
-                
-                # Evaluate on validation fold
-                fold_predictions = clf.predict(X_val_clean)
-                fold_probabilities = clf.predict_proba(X_val_clean)
+            clf.fit(X_train_clean, y_train_clean)
+
+            # Evaluate on validation fold
+            fold_predictions = clf.predict(X_val_clean)
+            fold_probabilities = clf.predict_proba(X_val_clean)
 
             # Compute metrics
             fold_metrics = compile_metrics(
@@ -300,6 +259,7 @@ def run_cv_for_config(
             )
 
             cv_metrics_list.append(fold_metrics)
+            per_session_results.append((test_session_str, fold_metrics.copy()))
             fold_time = time.time() - fold_start
             fold_times.append(fold_time)
             print(f"Acc: {fold_metrics['Acc.']:.4f} ({fold_time:.1f}s)")
@@ -317,6 +277,7 @@ def run_cv_for_config(
             "F1 Score": "N/A",
             "ECE": "N/A",
             "Brier": "N/A",
+            "per_session": [],
         }
 
     # Compute mean and std for each metric
@@ -335,6 +296,9 @@ def run_cv_for_config(
     # Add timing info
     result["Avg. Fold Time (s)"] = f"{np.mean(fold_times):.1f}"
 
+    # Attach per-session results for later display
+    result["per_session"] = per_session_results
+
     return result
 
 
@@ -346,23 +310,7 @@ def run_baseline_comparison_pipeline():
     # =========================================================================
     # 1. Load Configuration
     # =========================================================================
-    # Detect project root: handle both workspace root and BCI-Challenge subdirectory
-    # Script is at: [workspace]/BCI-Challenge/src/bci/main_offline_Baseline.py
-    script_dir = Path(__file__).parent.parent.parent  # Goes up 3 levels from script
-    
-    # Check if we're in a BCI-Challenge subdirectory (workspace structure)
-    # The script is at: BCI-Challenge/src/bci/main_offline_Baseline.py
-    # So script_dir should be BCI-Challenge directory
-    # Check if script_dir contains "src" and "data" directories to confirm it's the project root
-    if (script_dir / "src").exists() and (script_dir / "data").exists():
-        # This is the BCI-Challenge project root
-        current_wd = script_dir
-    elif (script_dir / "BCI-Challenge" / "src").exists() and (script_dir / "BCI-Challenge" / "data").exists():
-        # We're in workspace root, need to go into BCI-Challenge
-        current_wd = script_dir / "BCI-Challenge"
-    else:
-        # Fallback: assume script_dir is correct
-        current_wd = script_dir
+    current_wd = Path.cwd()  # BCI-Challenge directory
 
     try:
         config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
@@ -417,8 +365,8 @@ def run_baseline_comparison_pipeline():
             all_target_raws,
             all_target_events,
             target_metadata["filenames"],
-            num_general=3,
-            num_dino=17,
+            num_general=6,
+            num_dino=19,
             num_supression=0,
             shuffle=True,
         )
@@ -553,6 +501,78 @@ def run_baseline_comparison_pipeline():
     comparison_table.add_rows(all_results_sorted)
     comparison_table.display()
 
+    # =========================================================================
+    # 5b. Per-session (per test fold) performance
+    # =========================================================================
+    print("\n" + "=" * 80)
+    print("PER-SESSION PERFORMANCE (when session X was held out as test set)")
+    print("=" * 80)
+
+    # Build consolidated matrix: rows = test session, columns = model, cells = Acc.
+    session_to_acc = {}  # test_session -> {model_name: acc}
+    for result in all_results_sorted:
+        model_name = result.get("Model", "?")
+        for test_session, metrics in result.get("per_session", []):
+            if test_session not in session_to_acc:
+                session_to_acc[test_session] = {}
+            acc = metrics.get("Acc.", np.nan)
+            session_to_acc[test_session][model_name] = (
+                f"{acc:.4f}" if isinstance(acc, (int, float)) else str(acc)
+            )
+
+    if session_to_acc:
+        models_ordered = [r["Model"] for r in all_results_sorted]
+        sessions_ordered = sorted(session_to_acc.keys())
+        matrix_rows = []
+        for sess in sessions_ordered:
+            row = {"Test Session": sess}
+            for m in models_ordered:
+                row[m] = session_to_acc[sess].get(m, "N/A")
+            matrix_rows.append(row)
+        print("\nAccuracy by test session (rows) and model (columns):")
+        acc_matrix_table = MetricsTable()
+        acc_matrix_table.add_rows(matrix_rows)
+        acc_matrix_table.display()
+
+    for result in all_results_sorted:
+        model_name = result.get("Model", "?")
+        per_session = result.get("per_session", [])
+        if not per_session:
+            print(f"\n{model_name}: No per-session data.")
+            continue
+
+        print(f"\n{model_name}:")
+        print("-" * 60)
+        session_rows = []
+        for test_session, metrics in per_session:
+            acc = metrics.get("Acc.", "N/A")
+            b_acc = metrics.get("B. Acc.", "N/A")
+            f1 = metrics.get("F1 Score", "N/A")
+            ece = metrics.get("ECE", "N/A")
+            brier = metrics.get("Brier", "N/A")
+
+            def _fmt(v):
+                return f"{v:.4f}" if isinstance(v, (int, float)) else str(v)
+
+            row = {
+                "Test Session": test_session,
+                "Acc.": _fmt(acc),
+                "B. Acc.": _fmt(b_acc),
+                "F1 Score": _fmt(f1),
+                "ECE": _fmt(ece),
+                "Brier": _fmt(brier),
+            }
+            session_rows.append(row)
+            print(
+                f"  {test_session}: Acc={_fmt(acc)}, "
+                f"B.Acc={_fmt(b_acc)}, F1={_fmt(f1)}, ECE={_fmt(ece)}, Brier={_fmt(brier)}"
+            )
+
+        # Add per-session table for this model
+        ps_table = MetricsTable()
+        ps_table.add_rows(session_rows)
+        ps_table.display()
+
     # Also create a pandas DataFrame for easier analysis (sorted)
     df_results = pd.DataFrame(all_results_sorted)
 
@@ -590,61 +610,24 @@ def run_baseline_comparison_pipeline():
             step_size=config.step_size,
         )
 
+        final_clf = choose_model(
+            "baseline",
+            {
+                "features": best_config["features"],
+                "classifier": best_config["classifier"],
+                "scale": best_config["scale"],
+                "random_state": config.random_state,
+            },
+        )
+
+        final_clf.fit(X_train_windows, y_train_windows)
+
         # Save the best model
         model_dir = current_wd / "resources" / "models"
         model_dir.mkdir(parents=True, exist_ok=True)
-
-        if best_config["classifier"] == "hybrid_lda":
-            # Use HybridLDAWrapper with feature extraction
-            # Note: use_improved_composition defaults to True in HybridLDAWrapper
-            final_clf = HybridLDAWrapper(
-                features=best_config["features"],
-                move_threshold=0.5,
-                reg=1e-2,
-                shrinkage_alpha=0.1,
-                uc_mu=0.4 * 2**-6,
-                sfreq=config.fs
-            )
-            final_clf.fit(X_train_windows, y_train_windows)
-            
-            # Save HybridLDA model
-            model_path = model_dir / "hybrid_lda_best.pkl"
-            final_clf.save(str(model_path))
-            print(f"Best HybridLDA model saved to: {model_path}")
-        else:
-            # Baseline models path (existing code)
-            # Artifact removal (same as in CV)
-            ar = ArtefactRemoval()
-            ar.get_rejection_thresholds(X_train_windows, config)
-            X_train_clean, y_train_clean = ar.reject_bad_epochs(
-                X_train_windows, y_train_windows
-            )
-
-            if len(X_train_clean) == 0:
-                print("Warning: No data left after artifact rejection. Skipping final model save.")
-            else:
-                final_clf = choose_model(
-                    "baseline",
-                    {
-                        "features": best_config["features"],
-                        "classifier": best_config["classifier"],
-                        "scale": best_config["scale"],
-                        "random_state": config.random_state,
-                    },
-                )
-
-                final_clf.fit(X_train_clean, y_train_clean)
-
-                # Save the best model and ArtefactRemoval
-                model_path = model_dir / "baseline_best_model.pkl"
-                artefact_path = model_dir / "artefact_removal.pkl"
-
-                final_clf.save(str(model_path))
-                with open(artefact_path, "wb") as f:
-                    pickle.dump(ar, f)
-
-                print(f"Best model saved to: {model_path}")
-                print(f"ArtefactRemoval saved to: {artefact_path}")
+        model_path = model_dir / "baseline_best_model.pkl"
+        final_clf.save(str(model_path))
+        print(f"Best model saved to: {model_path}")
 
     return all_results, df_results
 

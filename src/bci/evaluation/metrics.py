@@ -298,17 +298,17 @@ def compile_metrics(y_true, y_pred, y_prob, timings, n_classes):
     # Brier score:
     # - sklearn's brier_score_loss is binary-only.
     # - Here we compute a multiclass Brier score: mean over samples of sum_k (p_k - y_k)^2
+    # - Use direct label indexing so Brier works when validation fold has a subset of classes
+    #   (e.g. leave-one-session-out CV where a held-out session may not contain all classes)
     brier = float("nan")
     if y_prob is not None:
         y_prob_arr = np.asarray(y_prob)
         if y_prob_arr.ndim == 2 and y_prob_arr.shape[0] == len(y_true):
-            classes = np.unique(y_true)
-            # Build one-hot ground truth aligned to columns via sorted unique labels
-            classes_sorted = np.sort(classes)
-            y_true_idx = np.searchsorted(classes_sorted, y_true)
             k = y_prob_arr.shape[1]
-            if k == len(classes_sorted):
-                y_onehot = np.eye(k, dtype=float)[y_true_idx]
+            y_true = np.asarray(y_true, dtype=np.intp)
+            if k >= 1 and np.all((y_true >= 0) & (y_true < k)):
+                y_onehot = np.zeros((len(y_true), k), dtype=float)
+                y_onehot[np.arange(len(y_true)), y_true] = 1.0
                 brier = float(np.mean(np.sum((y_prob_arr - y_onehot) ** 2, axis=1)))
     metrics["Brier"] = round(brier, 4) if np.isfinite(brier) else float("nan")
 
