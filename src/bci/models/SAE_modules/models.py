@@ -11,6 +11,7 @@ from pytorch_lightning.core.module import LightningModule
 from scipy.stats import norm, wasserstein_distance
 
 from .utils import *
+from .properties import hyper_params as _hyper_params
 
 import warnings
 # Handle VisibleDeprecationWarning which was removed in NumPy 2.0
@@ -90,19 +91,19 @@ class convolution_AE(LightningModule):
         nn.LeakyReLU()
         )
                 
-        # Classifier Days
+        # Paper: "Both fully connected layers included a dropout layer with a 50% dropout rate"
+        # Classifier Days (on residuals' latent space)
         self.classiffier_days = nn.Sequential(
         nn.Flatten(),
-        nn.Linear(adjustments['latent_sz'], days_labels_N),
         nn.Dropout(0.5),
+        nn.Linear(adjustments['latent_sz'], days_labels_N),
         )
         
-        # Classifier Task
+        # Classifier Task (on encoder's latent space)
         self.classiffier_task = nn.Sequential(
         nn.Flatten(),
-        nn.Linear(adjustments['latent_sz'], task_labels_N),
         nn.Dropout(0.5),
-
+        nn.Linear(adjustments['latent_sz'], task_labels_N),
         )
         
       
@@ -139,59 +140,66 @@ class convolution_AE(LightningModule):
         #         self.mode = 'reconstruction'
         
     def training_step(self, batch, batch_idx):
-        # Extract batch
+        """
+        Paper: "L = LMSE + Ltask + Lsession"
+        - LMSE: MSE between input and reconstructed signal
+        - Ltask: Cross-entropy for MI task classification from latent space
+        - Lsession: Cross-entropy for session classification from residuals' latent space
+        """
+        # Extract batch (y, days_y are one-hot from dataset)
         x, y, days_y = batch
+        # CrossEntropyLoss expects class indices (Long), not one-hot
+        y_cls = y.argmax(dim=1).long()
+        days_cls = days_y.argmax(dim=1).long()
+
         # Define loss functions
         loss_fn_days = nn.CrossEntropyLoss()
         loss_fn_rec = nn.MSELoss()
         loss_fn_task = nn.CrossEntropyLoss()
             
-        # Encode
+        # 1. Encode input to latent space
         encoded = self.encode(x)
         
-        # Get predictions for task
+        # 2. Task classification from latent space (Ltask)
         preds_task = self.classiffier_task(encoded)
-        task_loss = loss_fn_task(preds_task, y)
+        task_loss = loss_fn_task(preds_task, y_cls)
 
-        # Compute task classification accuracy
-        task_acc = sklearn.metrics.accuracy_score(np.argmax(F.softmax(preds_task, dim=-1).detach().cpu().numpy(), axis=1),
-                                             np.argmax(y.detach().cpu().numpy(), axis=1))
+        # Compute task classification accuracy for monitoring
+        with torch.no_grad():
+            task_acc = (preds_task.argmax(dim=1) == y_cls).float().mean().item()
 
-        # Log scalars
-        self.log('task_loss', task_loss, prog_bar=True, on_step=False, on_epoch=True)
-        self.log('task_accuracy', task_acc, prog_bar=True, on_step=False, on_epoch=True)
-
-        # Decode
+        # 3. Decode to reconstruct signal
         reconstructed = self.decoder(encoded)
 
-        # Compute residuals
-        residuals = torch.sub(x, reconstructed)
-
-        # Encode residuals
-        residuals_compact = self.res_encoder(residuals)
-
-        # Get predictions per day
-        preds_days = self.classiffier_days(residuals_compact)
-
-        # Compute all losses
-        days_loss = loss_fn_days(preds_days, days_y)
+        # 4. Reconstruction loss (LMSE)
         reconstruction_loss = loss_fn_rec(reconstructed, x)
 
-        # Compute days classification accuracy
-        days_acc = sklearn.metrics.accuracy_score(np.argmax(F.softmax(preds_days, dim=-1).detach().cpu().numpy(), axis=1),
-                                             np.argmax(days_y.detach().cpu().numpy(), axis=1))
+        # 5. Compute residuals (x - x_hat) and encode them
+        residuals = x - reconstructed
+        residuals_compact = self.res_encoder(residuals)
 
-        # Log results
+        # 6. Session classification from residuals' latent space (Lsession)
+        preds_days = self.classiffier_days(residuals_compact)
+        days_loss = loss_fn_days(preds_days, days_cls)
+
+        # Compute session classification accuracy for monitoring
+        with torch.no_grad():
+            days_acc = (preds_days.argmax(dim=1) == days_cls).float().mean().item()
+
+        # Log metrics
+        self.log('task_loss', task_loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log('task_accuracy', task_acc, prog_bar=True, on_step=False, on_epoch=True)
         self.log('days_loss', days_loss, prog_bar=True, on_step=False, on_epoch=True)
         self.log('reconstruction_loss', reconstruction_loss, prog_bar=True, on_step=False, on_epoch=True)
         self.log('days_accuracy', days_acc, prog_bar=True, on_step=False, on_epoch=True)
 
+        # Paper equation: L = LMSE + Ltask + Lsession (equal weights, no scaling)
         if self.mode == 'task':
-            return days_loss + task_loss
+            return task_loss + days_loss
         elif self.mode == 'unsupervised':
             return reconstruction_loss
         elif self.mode == 'supervised':
-            return reconstruction_loss + days_loss + task_loss
+            return reconstruction_loss + task_loss + days_loss
    
     def get_lr(optimizer):
         for param_group in optimizer.param_groups:

@@ -104,7 +104,7 @@ def epochs_to_windows(
         windowed_groups.extend([groups[i]] * windows.shape[0])
 
     if len(windowed_epochs) == 0:
-        return np.zeros((0, data.shape[1], window_size)), np.array([], dtype=int)
+        return np.zeros((0, data.shape[1], window_size)), np.array([], dtype=int), np.array([])
 
     windowed_epochs = np.concatenate(windowed_epochs, axis=0)
     windowed_labels = np.array(windowed_labels)
@@ -127,6 +127,8 @@ def epochs_windows_from_fold(
     ----------
     epochs : mne.Epochs
         Full Epochs object (n_epochs, n_channels, n_times). The indices refer to rows in this object.
+    groups : np.ndarray
+        Group labels for each epoch (e.g., session IDs for grouped CV).
     train_idx : np.ndarray
         Indices of epochs to use for training (relative to the epochs object).
     val_idx : np.ndarray
@@ -139,9 +141,11 @@ def epochs_windows_from_fold(
     Returns
     -------
     dict
-        Keys: 'X_train', 'y_train', 'trial_ids_train', 'X_val', 'y_val', 'trial_ids_val'
+        Keys: 'X_train', 'y_train', 'groups_train', 'trial_ids_train',
+              'X_val', 'y_val', 'groups_val', 'trial_ids_val'
         - X_* : np.ndarray shaped (n_windows, n_channels, window_size)
         - y_* : np.ndarray shaped (n_windows,)
+        - groups_* : np.ndarray shaped (n_windows,) with group labels per window
         - trial_ids_* : np.ndarray shaped (n_windows,) mapping each window back to epoch index
 
     Notes
@@ -154,12 +158,16 @@ def epochs_windows_from_fold(
     epochs_train = epochs[train_idx]
     epochs_val = epochs[val_idx]
 
-    # Convert epochs -> windows
-    X_train, y_train, _ = epochs_to_windows(
-        epochs_train, groups, window_size=window_size, step_size=step_size
+    # Select corresponding groups for each subset
+    groups_train_subset = np.asarray(groups)[train_idx]
+    groups_val_subset = np.asarray(groups)[val_idx]
+
+    # Convert epochs -> windows (with groups)
+    X_train, y_train, groups_train = epochs_to_windows(
+        epochs_train, groups_train_subset, window_size=window_size, step_size=step_size
     )
-    X_val, y_val, _ = epochs_to_windows(
-        epochs_val, groups, window_size=window_size, step_size=step_size
+    X_val, y_val, groups_val = epochs_to_windows(
+        epochs_val, groups_val_subset, window_size=window_size, step_size=step_size
     )
 
     # Build trial id arrays mapping each window back to original epoch index
@@ -185,8 +193,10 @@ def epochs_windows_from_fold(
     return {
         "X_train": X_train,
         "y_train": y_train,
+        "groups_train": groups_train,
         "trial_ids_train": trial_ids_train,
         "X_val": X_val,
         "y_val": y_val,
+        "groups_val": groups_val,
         "trial_ids_val": trial_ids_val,
     }
