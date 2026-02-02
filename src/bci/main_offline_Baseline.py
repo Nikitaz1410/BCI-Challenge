@@ -29,6 +29,7 @@ Usage:
     python main_offline_Baseline.py
 """
 
+import random
 import re
 import sys
 import time
@@ -233,6 +234,7 @@ def run_cv_for_config(
                 "features": model_config["features"],
                 "classifier": model_config["classifier"],
                 "scale": model_config["scale"],
+                "random_state": config.random_state,
             },
         )
 
@@ -310,7 +312,8 @@ def run_baseline_comparison_pipeline():
         print(f"Error loading config: {e}")
         sys.exit(1)
 
-    # Initialize variables
+    # Initialize variables - set all seeds for reproducibility
+    random.seed(config.random_state)
     np.random.seed(config.random_state)
 
     # Number of folds = number of sessions (leave-one-session-out CV)
@@ -353,8 +356,8 @@ def run_baseline_comparison_pipeline():
             all_target_raws,
             all_target_events,
             target_metadata["filenames"],
-            num_general=0,
-            num_dino=13,
+            num_general=6,
+            num_dino=19,
             num_supression=0,
             shuffle=True,
         )
@@ -532,6 +535,7 @@ def run_baseline_comparison_pipeline():
                 "features": best_config["features"],
                 "classifier": best_config["classifier"],
                 "scale": best_config["scale"],
+                "random_state": config.random_state,
             },
         )
 

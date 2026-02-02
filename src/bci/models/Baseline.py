@@ -424,20 +424,22 @@ def _as_int_labels(labels: Optional[np.ndarray], fallback_size: int) -> np.ndarr
     raise ValueError("Labels must be 1D class indices or 2D one-hot arrays.")
 
 
-def _create_classifier(classifier_type: str) -> Any:
+def _create_classifier(classifier_type: str, random_state: Optional[int] = None) -> Any:
     """
     Create a classifier instance based on the classifier type string.
 
     Args:
         classifier_type: One of 'svm', 'lda', 'logreg', 'lr', 'rf'
+        random_state: Optional seed for reproducible results (SVM, LogReg, RF).
 
     Returns:
         A scikit-learn classifier instance.
     """
     classifier_type = str(classifier_type or "lda").lower()
+    rs = 42 if random_state is None else random_state
 
     if classifier_type in ("lda", "csp-lda", "linear_discriminant"):
-        # Shrinkage LDA with auto-regularization
+        # Shrinkage LDA with auto-regularization (deterministic)
         return LinearDiscriminantAnalysis(solver='lsqr', shrinkage='auto')
     elif classifier_type in ("svm", "svc", "csp-svm"):
         return SVC(
@@ -445,16 +447,17 @@ def _create_classifier(classifier_type: str) -> Any:
             C=1.0,
             gamma='scale',
             probability=True,
-            class_weight='balanced'
+            class_weight='balanced',
+            random_state=rs,
         )
     elif classifier_type in ("logreg", "lr", "logistic", "logistic_regression", "csp-logreg", "csp-lr"):
-        return LogisticRegression(max_iter=2000, class_weight=None)
+        return LogisticRegression(max_iter=2000, class_weight=None, random_state=rs)
     elif classifier_type in ("rf", "random_forest", "csp-rf"):
         return RandomForestClassifier(
             n_estimators=100,
             max_depth=10,
             class_weight='balanced',
-            random_state=42
+            random_state=rs,
         )
     else:
         raise ValueError(
@@ -487,6 +490,9 @@ class AllRounderBCIModel:
 
     scale:
         Whether to standardize concatenated features before classification.
+
+    random_state:
+        Optional seed for reproducible results (SVM, LogReg, RF).
     """
 
     def __init__(
@@ -495,10 +501,12 @@ class AllRounderBCIModel:
         features: Union[str, Sequence[Union[str, Dict[str, Any]]], None] = None,
         classifier: str = "lda",
         scale: bool = True,
+        random_state: Optional[int] = None,
     ) -> None:
         self.feature_specs = _normalize_feature_list(features)
         self.classifier_type = str(classifier or "lda")
         self.scale = bool(scale)
+        self.random_state = random_state
 
         self._feature_extractor: Optional[ConcatFeatureUnion] = None
         self._scaler: Optional[StandardScaler] = None
@@ -526,7 +534,7 @@ class AllRounderBCIModel:
         else:
             self._scaler = None
 
-        self._classifier = _create_classifier(self.classifier_type)
+        self._classifier = _create_classifier(self.classifier_type, self.random_state)
         self._classifier.fit(X, labels)
 
         self._meta = {

@@ -436,8 +436,8 @@ def run_sae_comparison_pipeline(
             all_target_raws,
             all_target_events,
             target_metadata["filenames"],
-            num_general=0,
-            num_dino=13,
+            num_general=6,
+            num_dino=19,
             num_supression=0,
             shuffle=True,
         )
