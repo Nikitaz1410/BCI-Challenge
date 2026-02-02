@@ -536,12 +536,16 @@ class MIRepNetModel:
         if signals.ndim != 3:
             raise ValueError("Signals must have shape [N, C, T].")
 
-        # Preprocess signals: per-subject EA and channel padding
+        # Preprocess signals: per-subject EA and channel padding.
+        # Use stored EA ref from fit() when available so validation/test data
+        # is transformed with training statistics (no data leakage in CV).
         signals_processed, ea_refs = _apply_ea_by_subject(
-            signals.astype(np.float32), subject_ids
+            signals.astype(np.float32),
+            subject_ids,
+            ref_by_subject=self._ea_ref_by_subject,
         )
         self._ea_ref_by_subject = ea_refs
-        
+
         # Always pad/interpolate to 45 channels (model requirement)
         target_num_channels = len(TARGET_CHANNELS)  # 45 channels
         if signals_processed.shape[1] != target_num_channels:
@@ -555,7 +559,7 @@ class MIRepNetModel:
                     actual_channels = [f"CH{i}" for i in range(signals.shape[1])]
             else:
                 actual_channels = self.actual_channels
-                
+
             signals_processed = pad_missing_channels_diff(
                 signals_processed,
                 TARGET_CHANNELS,
@@ -607,12 +611,15 @@ class MIRepNetModel:
         if signals.ndim != 3:
             raise ValueError("Signals must have shape [N, C, T].")
 
-        # Preprocess signals: per-subject EA and channel padding
+        # Preprocess signals: per-subject EA and channel padding.
+        # Use stored EA ref from fit() when available (no data leakage in CV).
         signals_processed, ea_refs = _apply_ea_by_subject(
-            signals.astype(np.float32), subject_ids
+            signals.astype(np.float32),
+            subject_ids,
+            ref_by_subject=self._ea_ref_by_subject,
         )
         self._ea_ref_by_subject = ea_refs
-        
+
         # Always pad/interpolate to 45 channels (model requirement)
         target_num_channels = len(TARGET_CHANNELS)  # 45 channels
         if signals_processed.shape[1] != target_num_channels:
@@ -626,7 +633,7 @@ class MIRepNetModel:
                     actual_channels = [f"CH{i}" for i in range(signals.shape[1])]
             else:
                 actual_channels = self.actual_channels
-                
+
             signals_processed = pad_missing_channels_diff(
                 signals_processed,
                 TARGET_CHANNELS,

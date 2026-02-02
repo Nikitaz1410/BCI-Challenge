@@ -129,7 +129,7 @@ if __name__ == "__main__":
             all_target_raws,
             all_target_events,
             target_metadata["filenames"],
-            num_p554=2,
+            num_p554=0,
             num_p999_general=0,
             num_p999_dino=13,
             shuffle=True,
@@ -345,11 +345,11 @@ if __name__ == "__main__":
         step_size=config.step_size,
     )
 
-    # ar = ArtefactRemoval()
-    # ar.get_rejection_thresholds(X_train_windows, config)
-    # X_train_clean, y_train_clean = ar.reject_bad_epochs(
-    #     X_train_windows, y_train_windows
-    # )
+    ar = ArtefactRemoval()
+    ar.get_rejection_thresholds(X_train_windows, config)
+    X_train_clean, y_train_clean = ar.reject_bad_epochs(
+        X_train_windows, y_train_windows
+    )
 
     X_train_clean, y_train_clean = X_train_windows, y_train_windows
 
@@ -450,9 +450,9 @@ if __name__ == "__main__":
     clf.save(model_path)
     print(f"Model saved to: {model_path}")
 
-    # # Save the Artefact Removal Object
-    # ar_path = Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
-    # with open(ar_path, "wb") as f:
-    #     if ar:
-    #         pickle.dump(ar, f)
-    # print(f"Artefact Removal object saved to: {ar_path}")
+    # Save the Artefact Removal Object
+    ar_path = Path.cwd() / "resources" / "models" / "artefact_removal.pkl"
+    with open(ar_path, "wb") as f:
+        if ar:
+            pickle.dump(ar, f)
+    print(f"Artefact Removal object saved to: {ar_path}")

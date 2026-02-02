@@ -11,6 +11,11 @@ import sys
 import time
 from pathlib import Path
 
+# Add src directory to Python path to allow imports
+src_dir = Path(__file__).parent.parent
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -19,7 +24,7 @@ try:
     from pylsl import StreamInlet, resolve_streams
 except ImportError:
     import subprocess
-    import sys
+    # sys is already imported at line 10
     print("⚠️  pylsl not found. Installing...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pylsl"], 
@@ -50,7 +55,23 @@ def extract_features(signals, sfreq):
 
 if __name__ == "__main__":
     # Load the config file
-    current_wd = Path.cwd()  # BCI-Challenge directory
+    # Detect project root: handle both workspace root and BCI-Challenge subdirectory
+    # Script is at: [workspace]/BCI-Challenge/src/bci/main_online_AdaptiveLDA.py
+    script_dir = Path(__file__).parent.parent.parent  # Goes up 3 levels from script
+    
+    # Check if we're in a BCI-Challenge subdirectory (workspace structure)
+    # The script is at: BCI-Challenge/src/bci/main_online_AdaptiveLDA.py
+    # So script_dir should be BCI-Challenge directory
+    # Check if script_dir contains "src" and "data" directories to confirm it's the project root
+    if (script_dir / "src").exists() and (script_dir / "data").exists():
+        # This is the BCI-Challenge project root
+        current_wd = script_dir
+    elif (script_dir / "BCI-Challenge" / "src").exists() and (script_dir / "BCI-Challenge" / "data").exists():
+        # We're in workspace root, need to go into BCI-Challenge
+        current_wd = script_dir / "BCI-Challenge"
+    else:
+        # Fallback: assume script_dir is correct
+        current_wd = script_dir
 
     try:
         config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
@@ -233,15 +254,18 @@ if __name__ == "__main__":
                     if hasattr(config, 'remove_channels') and config.remove_channels:
                         eeg_chunk = eeg_chunk[channel_indices_to_keep, :]
                     
-                    n_new_samples = eeg_chunk.shape[1]
+                    # Filter incoming data chunk first (stateful filter updates zi)
+                    filtered_chunk = filter.apply_filter_online(eeg_chunk)
+                    
+                    n_new_samples = filtered_chunk.shape[1]
 
                     # Safety: If new data is larger than the buffer, just take the end of it
                     if n_new_samples >= config.window_size:
-                        buffer = eeg_chunk[:, -config.window_size :]
+                        buffer = filtered_chunk[:, -config.window_size :]
                     else:
-                        # Update the buffers with the new chunks of data
+                        # Update the buffers with the filtered chunks of data
                         buffer[:, :-n_new_samples] = buffer[:, n_new_samples:]
-                        buffer[:, -n_new_samples:] = eeg_chunk
+                        buffer[:, -n_new_samples:] = filtered_chunk
                 elif iteration_count == 1:
                     print("⚠️  Warning: No EEG data received in first iteration. Waiting for data...")
 
@@ -294,11 +318,9 @@ if __name__ == "__main__":
 
                 previous_label = crt_label
 
-                # Filter the data (channels already removed from buffer)
-                filtered_data = filter.apply_filter_online(buffer)
-                
+                # Buffer already contains filtered data (filtered when added)
                 # Reshape for feature extraction: (1, n_channels, n_samples)
-                filtered_data_reshaped = filtered_data[np.newaxis, :, :]
+                filtered_data_reshaped = buffer[np.newaxis, :, :]
 
                 # Extract features (HybridLDA expects features, not raw data)
                 features = extract_features(filtered_data_reshaped, config.fs)  # Shape: (1, n_features)
@@ -367,6 +389,7 @@ if __name__ == "__main__":
                 print("STOPPING ONLINE PROCESSING")
                 print("="*60)
                 print(f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications):.2f} ms")
+                print(f"Filter latency: {filter.get_filter_latency():.2f} ms")
                 print(f"Total Predictions: {total_predictions}")
                 print(f"  Rejected: {total_rejected}")
                 print(f"  Accepted Successes: {total_successes}")

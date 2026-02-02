@@ -74,7 +74,7 @@ class BCIController:
             most_probable_command = np.argmax(buffer_probabilities)
 
             # Check if the command confidence is over the manual threshold and only send the command if it is
-            print(f"Buffer Probability: {buffer_probabilities[most_probable_command]}")
+            # print(f"Buffer Probability: {buffer_probabilities}")
             # if buffer_probabilities[most_probable_command] >= self.threshold:
 
             label_marker = self.COMMAND_MAP[most_probable_command]
@@ -84,3 +84,5 @@ class BCIController:
                 payload = self._build_prediction(*label_marker)
                 # TODO: Check how to bind client to server
                 self._send_udp(sock, payload, self.config.ip, self.config.port)
+
+            return buffer_probabilities
