@@ -181,6 +181,31 @@ def _get_raw_xdf_offline(
             print("Channels do not match standard 10-20 montage.")
             channel_labels = eeg_channels
 
+        if "P999" in trial.name and "S001" in trial.name:
+            print(
+                "Switched channels Cz and Fp2 detected. Assigning custom 16 channel labels + keyboard..."
+            )
+            custom_channels_p999 = [
+                "Fp1",
+                "Cz",
+                "F3",
+                "Fz",
+                "F4",
+                "T7",
+                "C3",
+                "Fp2",
+                "C4",
+                "T8",
+                "P3",
+                "Pz",
+                "P4",
+                "PO7",
+                "PO8",
+                "Oz",
+                "Keyboard",
+            ]
+            channel_labels = custom_channels_p999
+
         if len(eeg_channels) == 24:
             print(
                 "Recording with 24 channels detected. Different markers, so discarding the recording..."
@@ -302,7 +327,7 @@ def _get_raw_xdf_offline(
     raw_data = mne.io.RawArray(data, info, verbose=False)
     raw_data.set_montage(montage)
 
-    if "P554" in trial.name or ("P999" in trial.name and any(code in trial.name for code in target_codes)):
+    if "P554" in trial.name or ("P999" in trial.name and "S001" in trial.name):
         print("Reordering channels for standard 10-20 montage...")
         raw_data.reorder_channels(standard_channels)
         channel_labels = raw_data.ch_names
