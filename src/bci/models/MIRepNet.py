@@ -312,6 +312,7 @@ class MIRepNetModel:
         scheduler: str = "cosine",
         device: str = "auto",
         actual_channels: Optional[list] = None,
+        random_state: Optional[int] = None,
     ) -> None:
         """
         Initialize MIRepNet model wrapper.
@@ -334,10 +335,13 @@ class MIRepNetModel:
             Device to use: 'auto', 'cpu', 'cuda', or 'mps' (default: 'auto')
         actual_channels : list, optional
             List of actual channel names in the data. If None, assumes use_channels_names.
+        random_state : int, optional
+            Random seed for reproducible training (DataLoader shuffle, model init).
         """
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.pretrain_path = os.path.join(current_dir, "MIRepNet", "weight", "MIRepNet.pth")
         self.batch_size = batch_size
+        self._random_state = random_state
         self.epochs = epochs
         self.lr = lr
         self.weight_decay = weight_decay
@@ -425,6 +429,20 @@ class MIRepNetModel:
                 self.actual_channels = TARGET_CHANNELS
             print(f"Channels already match target ({signals.shape[1]} channels).")
 
+        # Set seeds for reproducible training (before model init and DataLoader)
+        if self._random_state is not None:
+            torch.manual_seed(self._random_state)
+            np.random.seed(self._random_state)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(self._random_state)
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
+        train_generator = (
+            torch.Generator().manual_seed(self._random_state)
+            if self._random_state is not None
+            else None
+        )
+
         # Create dataset and dataloader
         dataset = _NumpyMIRepNetDataset(signals_processed, task_labels)
         train_loader = DataLoader(
@@ -432,6 +450,7 @@ class MIRepNetModel:
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=0,  # Set to 0 to avoid multiprocessing issues
+            generator=train_generator,
         )
 
         # Initialize model

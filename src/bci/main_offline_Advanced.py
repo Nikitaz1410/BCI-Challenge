@@ -29,12 +29,16 @@ Usage:
     python main_offline_Advanced.py
 """
 
+import os
 import random
 import re
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
+
+# Deterministic cuBLAS (must be set before torch is imported)
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 # Add src directory to Python path to allow imports
 src_dir = Path(__file__).parent.parent
@@ -77,6 +81,11 @@ def _set_reproducibility(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+    # Use deterministic algorithms where available (PyTorch 1.8+)
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except AttributeError:
+        pass  # Older PyTorch versions
 
 
 def _session_id_from_filename(filename: str) -> str:

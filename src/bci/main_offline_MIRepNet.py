@@ -25,11 +25,14 @@ Usage:
     python main_offline_MIRepNet.py
 """
 
+import random
 import re
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import torch
 
 # Add src directory to Python path to allow imports
 src_dir = Path(__file__).parent.parent
@@ -58,6 +61,17 @@ from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fol
 # Utils
 from bci.utils.bci_config import load_config
 from bci.utils.utils import choose_model
+
+
+def _set_reproducibility(seed: int) -> None:
+    """Set all random seeds and deterministic flags for reproducible results."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def _session_id_from_filename(filename: str) -> str:
@@ -256,7 +270,8 @@ def run_cv_for_config(
             print("Skipped (no data)")
             continue
 
-        # Create and train the MIRepNet model
+        # Create and train the MIRepNet model (fold-specific seed for reproducibility)
+        fold_seed = config.random_state + fold_idx * 1000
         clf = choose_model(
             "mirepnet",
             {
@@ -266,6 +281,7 @@ def run_cv_for_config(
                 "optimizer": model_config["optimizer"],
                 "scheduler": model_config["scheduler"],
                 "actual_channels": channel_names,
+                "random_state": fold_seed,
             },
         )
 
@@ -359,8 +375,8 @@ def run_mirepnet_comparison_pipeline(
         print(f"Error loading config: {e}")
         sys.exit(1)
 
-    # Initialize variables
-    np.random.seed(config.random_state)
+    # Initialize variables - set all seeds for reproducibility
+    _set_reproducibility(config.random_state)
 
     # n_folds will be set to number of sessions after loading data
 
@@ -592,6 +608,7 @@ def run_mirepnet_comparison_pipeline(
                 "optimizer": best_config["optimizer"],
                 "scheduler": best_config["scheduler"],
                 "actual_channels": channel_names_after_preprocessing,
+                "random_state": config.random_state + 9999,
             },
         )
 
