@@ -397,9 +397,7 @@ def run_sae_comparison_pipeline(
     # Initialize variables
     np.random.seed(config.random_state)
 
-    # Set number of folds for CV (override config if needed)
-    n_folds = max(config.n_folds, 5)  # Use at least 5 folds for comparison
-    print(f"Using {n_folds}-fold cross-validation grouped by session.")
+    # n_folds will be set to number of sessions after loading data
 
     # Initialize filter
     filter_obj = Filter(config, online=False)
@@ -509,13 +507,13 @@ def run_sae_comparison_pipeline(
 
     # Get unique sessions
     unique_sessions = np.unique(groups)
-    n_folds = min(n_folds, len(unique_sessions))  # Can't have more folds than sessions
+    n_folds = len(unique_sessions)  # One fold per session (leave-one-session-out)
 
+    print(f"Using {n_folds}-fold cross-validation (one fold per session, grouped by session).")
     print(f"Training data shape: {X_train.shape}")
     print(f"Labels distribution: {np.unique(y_train, return_counts=True)}")
     print(f"Number of sessions (CV groups): {len(unique_sessions)}")
     print(f"Sessions: {list(unique_sessions)}")
-    print(f"Adjusted folds for CV: {n_folds}")
 
     # =========================================================================
     # 4. Run Cross-Validation for Each Configuration

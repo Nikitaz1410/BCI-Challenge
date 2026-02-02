@@ -460,9 +460,8 @@ def run_advanced_comparison_pipeline():
     # Set all random seeds for reproducibility
     _set_reproducibility(config.random_state)
 
-    # Set number of folds for CV (override config if needed)
-    n_folds = max(config.n_folds, 5)  # Use at least 5 folds for comparison
-    print(f"Using {n_folds}-fold cross-validation grouped by session.")
+    # Number of folds = number of sessions (leave-one-session-out CV)
+    print("Cross-validation grouped by session (n_folds = n_sessions).")
 
     # Initialize filter
     filter_obj = Filter(config, online=False)
@@ -572,7 +571,7 @@ def run_advanced_comparison_pipeline():
 
     # Get unique sessions
     unique_sessions = np.unique(groups)
-    n_folds = min(n_folds, len(unique_sessions))  # Can't have more folds than sessions
+    n_folds = len(unique_sessions)  # One fold per session (leave-one-session-out)
 
     print(f"Training data shape: {X_train.shape}")
     print(f"Labels distribution: {np.unique(y_train, return_counts=True)}")

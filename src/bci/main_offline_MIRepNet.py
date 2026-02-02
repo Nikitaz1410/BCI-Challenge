@@ -362,9 +362,7 @@ def run_mirepnet_comparison_pipeline(
     # Initialize variables
     np.random.seed(config.random_state)
 
-    # Set number of folds for CV (override config if needed)
-    n_folds = max(config.n_folds, 5)  # Use at least 5 folds for comparison
-    print(f"Using {n_folds}-fold cross-validation grouped by session.")
+    # n_folds will be set to number of sessions after loading data
 
     # Initialize filter
     filter_obj = Filter(config, online=False)
@@ -477,15 +475,15 @@ def run_mirepnet_comparison_pipeline(
     # Groups for CV: by session (multiple files can share one session)
     groups = combined_epochs.metadata["session"].values
 
-    # Get unique sessions
+    # Get unique sessions; number of folds = number of sessions (leave-one-session-out CV)
     unique_sessions = np.unique(groups)
-    n_folds = min(n_folds, len(unique_sessions))  # Can't have more folds than sessions
+    n_folds = len(unique_sessions)
+    print(f"Using {n_folds}-fold cross-validation (one fold per session, grouped by session).")
 
     print(f"Training data shape: {X_train.shape}")
     print(f"Labels distribution: {np.unique(y_train, return_counts=True)}")
     print(f"Number of sessions (CV groups): {len(unique_sessions)}")
     print(f"Sessions: {list(unique_sessions)}")
-    print(f"Adjusted folds for CV: {n_folds}")
     print(f"Channel names for MIRepNet: {channel_names_after_preprocessing}")
 
     # =========================================================================
