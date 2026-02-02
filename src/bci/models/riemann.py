@@ -44,7 +44,6 @@ class RiemannianClf:
     # Optional: Finetune to one of Fina's sessions (Recentering Formula, Geodesic Interpolation)
     def fit_centered(self, signals, y, groups):
         covs = self._extract_features(signals)
-        # TODO: Add recentering? (Normalization)
 
         unique_groups = np.unique(groups)
         classes = np.unique(y)
@@ -55,6 +54,7 @@ class RiemannianClf:
         for group_id, group in enumerate(unique_groups):
             # Compute the centroids of the group (sessions | subjects)
             signal_idx = np.where(groups == group)[0]
+
             grouped_covs = covs[signal_idx, :, :]
             grouped_y = y[signal_idx]
 
@@ -65,15 +65,23 @@ class RiemannianClf:
             recentered_covs = recentering(grouped_covs, centroid)
 
             for cls_id, cls in enumerate(classes):
-                cls_covs = recentered_covs[grouped_y == cls]
-                cls_covs = np.array(cls_covs)
+                try:
+                    cls_covs = recentered_covs[grouped_y == cls]
+                    cls_covs = np.array(cls_covs)
 
-                if not is_sym_pos_def(centroid):
-                    print(f"Problem with Centroid of {cls}, {group}!")
-                else:
-                    # Compute the class-centroid
-                    centroids.append(mean_riemann(cls_covs))
-                    centroids_y.append(cls)
+                    if cls_covs.shape[0] <= 0:
+                        print(f"No covs for {cls} of sess {group}")
+                    else:
+                        cls_centroid = mean_riemann(cls_covs)
+
+                        if not is_sym_pos_def(cls_centroid):
+                            print(f"Centroid of {cls}, {group} is not SPD!")
+                        else:
+                            # Compute the class-centroid
+                            centroids.append(cls_centroid)
+                            centroids_y.append(cls)
+                except Exception as e:
+                    print(f"Problem with Centroid of {cls}, {group}: {e}")
 
         # Fit the classifier based on the
         centroids_X = np.array(centroids)
