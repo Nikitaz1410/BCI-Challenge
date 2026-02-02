@@ -2,6 +2,7 @@
 window_size: 250
 step_size: 32
 fs: 250
+resample: "None" # Options: None or int
 
 frequencies:
   - 8
@@ -40,7 +41,7 @@ subjects_ids: # Range if given 2 numbers | List if specific ids
   - 1
   - 15
 
-n_folds: 0
+n_folds: 3
 random_state: 42
 finetune: "sub-P554" # Options: sub-P999, sub-P554
 test: "sub-P554" # Options: sub-P999, sub-P554

@@ -12,6 +12,7 @@ class EEGConfig:
     window_size: int
     step_size: int
     fs: float
+    resample: None | float
     frequencies: List[float]
     order: int
     artefact_removal: str

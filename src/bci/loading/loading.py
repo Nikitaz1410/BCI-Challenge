@@ -38,6 +38,7 @@ import warnings
 import sys
 from pathlib import Path
 
+from matplotlib import pyplot as plt
 import pandas as pd
 import numpy as np
 import json
@@ -86,6 +87,7 @@ def _get_raw_xdf_offline(
 
     Notes
     -----
+    TODO: Now we have more data, description needs to be revised
     The current implementation processes following types of recordings:
     1. Recordings with 16 channels and no channel information -> assign 16 channel labels from standard 1020 montage
     2. Recordings with 16 channels, and channel information exactly matches standard channel labels -> use existing channel labels
@@ -96,7 +98,9 @@ def _get_raw_xdf_offline(
     """
     import pyxdf
 
+    print("\n")
     print(("=" * 30) + f" Processing file: {trial.name} " + ("=" * 30))
+    print(f"Loading trial from: {trial}")
 
     # Load the data
     if marker_durations is None:
@@ -132,6 +136,8 @@ def _get_raw_xdf_offline(
         "Oz",
     ]
 
+    target_codes = ["S001", "S101", "S102", "S103", "S104"]
+
     # Iterate through streams to find desired indices, extract EEG stream
     for i, stream in enumerate(streams):
         name = stream["info"]["name"][0]  # name of the stream
@@ -151,6 +157,10 @@ def _get_raw_xdf_offline(
             pupil_capture_fixations_channel = i
         else:
             event_channel = i  # markers stream
+
+    if "P999" in trial.name and "S001" in trial.name:
+        print("P999 with S001 detected. Discarding the recording...")
+        return None, None, None
 
     # Validate channel information:
     if streams[eeg_channel]["info"]["desc"] != [None]:
@@ -187,11 +197,43 @@ def _get_raw_xdf_offline(
                 "Number of channels is 16. Assigning 16 first channel labels from standard_1020 montage..."
             )
             channel_labels = standard_channels
+
+        if "P999" in trial.name and any(code in trial.name for code in target_codes):
+            print(
+                "Switched channels Cz and Fp2 detected. Assigning custom 16 channel labels + keyboard..."
+            )
+            custom_channels_p999 = [
+                "Fp1",
+                "Cz",
+                "F3",
+                "Fz",
+                "F4",
+                "T7",
+                "C3",
+                "Fp2",
+                "C4",
+                "T8",
+                "P3",
+                "Pz",
+                "P4",
+                "PO7",
+                "PO8",
+                "Oz",
+                "Keyboard",
+            ]
+            channel_labels = custom_channels_p999  # Switched Fp2 and Cz for P999 with 16 channels + keyboard
+
+        if "P124" in trial.name:
+            print(
+                "P124 recording detected. Recording empty, discarding..."
+            )
+            return None, None, None
+        
         if "P554" in trial.name:
             print(
                 "P554 recording detected. Assigning custom 16 channel labels + keyboard..."
             )
-            custom_channels = [
+            custom_channels_p554 = [
                 "Fp1",
                 "Fp2",
                 "T8",
@@ -211,7 +253,7 @@ def _get_raw_xdf_offline(
                 "Keyboard",
             ]
             channel_labels = (
-                custom_channels  # Custom channel labels for P554 with 16 channels
+                custom_channels_p554  # Custom channel labels for P554 with 16 channels
             )
 
         if (
@@ -257,7 +299,7 @@ def _get_raw_xdf_offline(
     raw_data = mne.io.RawArray(data, info, verbose=False)
     raw_data.set_montage(montage)
 
-    if "P554" in trial.name:
+    if "P554" in trial.name or ("P999" in trial.name and any(code in trial.name for code in target_codes)):
         print("Reordering channels for standard 10-20 montage...")
         raw_data.reorder_channels(standard_channels)
         channel_labels = raw_data.ch_names
@@ -267,8 +309,23 @@ def _get_raw_xdf_offline(
         raw_data.ch_names,
     )
 
+    # raw_data.filter(l_freq=1.0, h_freq=40.0)
+    # raw_data.plot()
+    # fig = raw_data.plot(duration=30, n_channels=16, show=False, block=False)
+
+    # print(f"Max value: {np.max(raw_data.get_data())}")
+    # print(f"Min value: {np.min(raw_data.get_data())}")
+    # print(f"Mean value: {np.mean(raw_data.get_data())}")
+
+    # # Save it
+    # save_dir = Path(root_dir)
+    # save_path = save_dir / "data"/ f"inspect_{trial.name}.png"
+    # fig.savefig(save_path, dpi=200)
+    # plt.close(fig)
+
     # In the case where the offline collected data (calibration from online) does not have any markers
     if event_channel is None:
+        print("No event channel found in the recording.")
         return raw_data, markers, channel_labels
 
     # get naming of markers and convert to numpy array
@@ -293,6 +350,10 @@ def _get_raw_xdf_offline(
         onset=real_time_marker, duration=duration_list, description=marker
     )
     raw_data.set_annotations(annotations)
+
+    if len(raw_data.annotations) == 0:
+        print("No annotations found after adding. Discarding the recording...")
+        return None, None, None
 
     # Save the unique markers for later use
     markers = list(set(marker))
@@ -341,11 +402,27 @@ def _standardize_and_map(raw, target_event_id, mode="general"):
 
     # 2. Apply the rename to the raw object
     existing_descriptions = set(raw.annotations.description)
-    # print("Existing Annotations before renaming:", existing_descriptions)
+    # print(f"Existing annotations before standardization: {existing_descriptions}")
+
+    existing_descriptions = {str(desc) for desc in existing_descriptions}
 
     actual_map = {k: v for k, v in rename_map.items() if k in existing_descriptions}
-    raw.annotations.rename(actual_map)
+    # raw.annotations.rename(actual_map)
+    new_descriptions = []
+    for desc in raw.annotations.description:
+        desc_str = str(desc)
+        if desc_str in actual_map:
+            new_descriptions.append(actual_map[desc_str])
+        else:
+            new_descriptions.append(desc_str)  # Keep unchanged (e.g., 'JUMP')
+    
+    # Replace descriptions
+    raw.annotations.description = np.array(new_descriptions)
+    
+    # print(f"Annotations after standardization: {set(raw.annotations.description)}")
+    
 
+    # print(f"All annotations after standardization: {raw.annotations.description}")
     # 3. Force extraction of ONLY the standardized keys
     events, _ = mne.events_from_annotations(raw, event_id=target_event_id)
     if len(events) == 0:
@@ -481,7 +558,7 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
     return loaded_raws, loaded_events, event_id, subject_ids_out, raw_filenames
 
 
-def load_target_subject_data(root: Path, source_path: Path, target_path: Path, resample: int) -> tuple:
+def load_target_subject_data(root: Path, source_path: Path, target_path: Path, resample: float | None) -> tuple:
     """
     Loads target data (Subject 110).
     1. Checks target_path for existing .fif files.
@@ -538,13 +615,13 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
 
     if len(existing_fif) > 0:
         print(f"Found {len(existing_fif)} processed files in target raw folder. Loading...")
-        if resample:
+        if resample != "None":
             print(f"Resampling to {resample} Hz...")
         loaded_raws = []
         loaded_events = []
         for fif_p in existing_fif:
             raw = mne.io.read_raw_fif(fif_p, preload=True)
-            if resample:
+            if resample != "None":
                 sfreq = raw.info["sfreq"]
                 if sfreq != resample:
                     raw.resample(resample)
@@ -665,12 +742,12 @@ def create_subject_train_set(
     all_raws: list,
     all_events: list,
     all_filenames: list,
-    num_p554: int = 0,
-    num_p999_general: int = 0,
-    num_p999_dino: int = 0,
+    num_general: int = 0,
+    num_dino: int = 0,
     shuffle: bool = True,
 ) -> tuple:
     """
+    TODO: Describtion must be changed
     Create training dataset by selecting specific number of files from each category.
 
     Parameters
@@ -717,48 +794,35 @@ def create_subject_train_set(
     np.random.seed(config.random_state)
 
     # Categorize files by type
-    p554_indices = [i for i, fname in enumerate(all_filenames) if "P554" in fname]
-    print(f"Total number of P554 files available: {len(p554_indices)}")
-    p999_general_indices = [
+    general_indices = [i for i, fname in enumerate(all_filenames) if "dino" not in fname]
+    print(f"Total number of general files available: {len(general_indices)}")
+    dino_indices = [
         i
         for i, fname in enumerate(all_filenames)
-        if "P999" in fname and "dino" not in fname.lower()
+        if "dino" in fname.lower()
     ]
-    print(f"Total number of P999-general files available: {len(p999_general_indices)}")
-    p999_dino_indices = [
-        i
-        for i, fname in enumerate(all_filenames)
-        if "P999" in fname and "dino" in fname.lower()
-    ]
-    print(f"Total number of P999-dino files available: {len(p999_dino_indices)}")
+    print(f"Total number of P999-dino files available: {len(dino_indices)}")
 
     # Randomly shuffle
     if shuffle:
-        np.random.shuffle(p554_indices)
-        np.random.shuffle(p999_general_indices)
-        np.random.shuffle(p999_dino_indices)
+        np.random.shuffle(general_indices)
+        np.random.shuffle(dino_indices)
 
-    if len(p554_indices) < num_p554:
+    if len(general_indices) < num_general:
         raise ValueError(
-            f"Not enough P554 files available for training. "
-            f"Available: {len(p554_indices)}, Requested: {num_p554}"
+            f"Not enough general files available for training. "
+            f"Available: {len(general_indices)}, Requested: {num_general}"
         )
-    if len(p999_general_indices) < num_p999_general:
+    if len(dino_indices) < num_dino:
         raise ValueError(
-            f"Not enough P999-general files available for training. "
-            f"Available: {len(p999_general_indices)}, Requested: {num_p999_general}"
-        )
-    if len(p999_dino_indices) < num_p999_dino:
-        raise ValueError(
-            f"Not enough P999-dino files available for training. "
-            f"Available: {len(p999_dino_indices)}, Requested: {num_p999_dino}"
+            f"Not enough dino files available for training. "
+            f"Available: {len(dino_indices)}, Requested: {num_dino}"
         )
 
     # Select training files
     train_indices = (
-        p554_indices[:num_p554]
-        + p999_general_indices[:num_p999_general]
-        + p999_dino_indices[:num_p999_dino]
+        general_indices[:num_general]
+        + dino_indices[:num_dino]
     )
 
     if not train_indices:
@@ -766,11 +830,10 @@ def create_subject_train_set(
 
     print(f"\n=== Training Dataset, Target Subject ===")
     print(f"Selected {len(train_indices)} files:")
-    print(f"  - P554: {len(p554_indices[:num_p554])}")
+    print(f"  - General: {len(general_indices[:num_general])}")
     print(
-        f"  - P999-general (non-dino): {len(p999_general_indices[:num_p999_general])}"
+        f"  - Dino: {len(dino_indices[:num_dino])}"
     )
-    print(f"  - P999-dino: {len(p999_dino_indices[:num_p999_dino])}")
 
     # Build training set
     train_raws = [all_raws[i] for i in train_indices]
@@ -795,12 +858,12 @@ def create_subject_test_set(
     all_events: list,
     all_filenames: list,
     exclude_indices: list,
-    num_p554: int,
-    num_p999_general: int,
-    num_p999_dino: int,
+    num_general: int,
+    num_dino: int,
     shuffle: bool = False,
 ) -> tuple:
     """
+    # TODO: Describtion must be changed
     Create testing dataset from files NOT used in training.
     Selects exactly the specified number of files from each category.
 
@@ -847,45 +910,33 @@ def create_subject_test_set(
         i for i in range(len(all_filenames)) if i not in exclude_indices
     ]
 
-    p554_available = [i for i in available_indices if "P554" in all_filenames[i]]
-    p999_general_available = [
+    general_available = [i for i in available_indices if "dino" not in all_filenames[i].lower()]
+    dino_available = [
         i
         for i in available_indices
-        if "P999" in all_filenames[i] and "dino" not in all_filenames[i].lower()
-    ]
-    p999_dino_available = [
-        i
-        for i in available_indices
-        if "P999" in all_filenames[i] and "dino" in all_filenames[i].lower()
+        if "dino" in all_filenames[i].lower()
     ]
 
     # Check if enough files are available
-    if len(p554_available) < num_p554:
+    if len(general_available) < num_general:
         raise ValueError(
-            f"Not enough P554 files available for testing. "
-            f"Available: {len(p554_available)}, Requested: {num_p554}"
+            f"Not enough general files available for testing. "
+            f"Available: {len(general_available)}, Requested: {num_general}"
         )
-    if len(p999_general_available) < num_p999_general:
+    if len(dino_available) < num_dino:
         raise ValueError(
-            f"Not enough P999-general files available for testing. "
-            f"Available: {len(p999_general_available)}, Requested: {num_p999_general}"
-        )
-    if len(p999_dino_available) < num_p999_dino:
-        raise ValueError(
-            f"Not enough P999-dino files available for testing. "
-            f"Available: {len(p999_dino_available)}, Requested: {num_p999_dino}"
+            f"Not enough dino files available for testing. "
+            f"Available: {len(dino_available)}, Requested: {num_dino}"
         )
 
     # Shuffle and select exact number
     if shuffle:
-        np.random.shuffle(p554_available)
-        np.random.shuffle(p999_general_available)
-        np.random.shuffle(p999_dino_available)
+        np.random.shuffle(general_available)
+        np.random.shuffle(dino_available)
 
     test_indices = (
-        p554_available[:num_p554]
-        + p999_general_available[:num_p999_general]
-        + p999_dino_available[:num_p999_dino]
+        general_available[:num_general]
+        + dino_available[:num_dino]
     )
 
     if not test_indices:
@@ -893,9 +944,8 @@ def create_subject_test_set(
 
     print(f"\n=== Testing Dataset, Target Subject ===")
     print(f"Selected {len(test_indices)} files:")
-    print(f"  - P554: {num_p554}")
-    print(f"  - P999-general (non-dino): {num_p999_general}")
-    print(f"  - P999-dino: {num_p999_dino}")
+    print(f"  - General: {num_general}")
+    print(f"  - Dino: {num_dino}")
 
     # Build test set
     test_raws = [all_raws[i] for i in test_indices]
