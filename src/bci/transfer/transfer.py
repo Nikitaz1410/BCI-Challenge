@@ -75,14 +75,13 @@ class BCIController:
 
             # Check if the command confidence is over the manual threshold and only send the command if it is
             # print(f"Buffer Probability: {buffer_probabilities}")
-            # if buffer_probabilities[most_probable_command] >= self.threshold:
+            if buffer_probabilities[most_probable_command] >= self.threshold:
+                label_marker = self.COMMAND_MAP[most_probable_command]
+                if self.config.online == "dino":
+                    # Only send the command if the dino game is expected
 
-            label_marker = self.COMMAND_MAP[most_probable_command]
-            if self.config.online == "dino":
-                # Only send the command if the dino game is expected
-
-                payload = self._build_prediction(*label_marker)
-                # TODO: Check how to bind client to server
-                self._send_udp(sock, payload, self.config.ip, self.config.port)
+                    payload = self._build_prediction(*label_marker)
+                    # TODO: Check how to bind client to server
+                    self._send_udp(sock, payload, self.config.ip, self.config.port)
 
             return buffer_probabilities

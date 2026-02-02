@@ -8,8 +8,11 @@ from pyriemann.utils.tangentspace import log_map_riemann, tangent_space
 from pyriemann.utils.test import is_sym_pos_def
 from pyriemann.utils.mean import mean_riemann
 from pyriemann.utils.geodesic import geodesic_riemann
+from pyriemann.utils.viz import plot_embedding
 from sklearn.externals._packaging.version import Optional
 from sklearn.externals.array_api_compat.numpy import bool_, sign
+
+import matplotlib.pyplot as plt
 
 
 # RiemannianClf: Classifier using Riemannian geometry for covariance matrices
@@ -24,6 +27,7 @@ class RiemannianClf:
         self.clf = FgMDM()  # Initialize the FgMDM classifier from pyriemann
         self.cov_est = cov_est  # Store the covariance estimator type
         self.online_predictions = 0  # Needed for realtime adaptation
+        self.recentering_centroid = None  # Needed for prediction
 
     def fit(self, signals, y):
         """
@@ -37,12 +41,45 @@ class RiemannianClf:
         # TODO: Add recentering? (Normalization)
         self.clf.fit(covs, y)
 
+    def fit_centered(self, signals, y, groups):
+        covs = self._extract_features(signals)
+        unique_groups = np.unique(groups)
+
+        # print(f"Covs: {covs.shape}")
+        # print(f"Y: {y.shape}")
+        # print(f"Groups: {groups.shape}")
+
+        X_train = None
+        y_train = None
+
+        for group_id, group in enumerate(unique_groups):
+            group_covs_idx = np.where(groups == group)[0]
+            grouped_covs = covs[group_covs_idx, :, :]
+            y_grouped = y[group_covs_idx]
+
+            # Add recentering to session centroid to have better class separation
+            centroid = mean_riemann(grouped_covs)
+
+            # Compute the centered covs
+            recentered_covs = recentering(grouped_covs, centroid)
+
+            if X_train is None:
+                X_train = recentered_covs
+                y_train = y_grouped
+            else:
+                X_train = np.concatenate((X_train, recentered_covs), axis=0)
+                y_train = np.concatenate((y_train, y_grouped), axis=0)
+
+        self.recentering_centroid = mean_riemann(X_train)
+
+        self.clf.fit(X_train, y_train)
+
     # Approach
     # Create class centroids for each subject/session
     # Optional: Recenter Data to Baseline - Session Centroid (Inter-Subject/Session Variability)
     # Train the model on the class centroids
     # Optional: Finetune to one of Fina's sessions (Recentering Formula, Geodesic Interpolation)
-    def fit_centered(self, signals, y, groups):
+    def fit_special(self, signals, y, groups):
         covs = self._extract_features(signals)
 
         unique_groups = np.unique(groups)
@@ -53,21 +90,21 @@ class RiemannianClf:
 
         for group_id, group in enumerate(unique_groups):
             # Compute the centroids of the group (sessions | subjects)
-            signal_idx = np.where(groups == group)[0]
+            group_covs_idx = np.where(groups == group)[0]
 
-            grouped_covs = covs[signal_idx, :, :]
-            grouped_y = y[signal_idx]
+            grouped_covs = covs[group_covs_idx, :, :]
+            grouped_y = y[group_covs_idx]
 
             # Add recentering to session centroid to have better class separation
             centroid = mean_riemann(grouped_covs)
 
             # Compute the centered covs
             recentered_covs = recentering(grouped_covs, centroid)
+            # recentered_covs = grouped_covs
 
             for cls_id, cls in enumerate(classes):
                 try:
                     cls_covs = recentered_covs[grouped_y == cls]
-                    cls_covs = np.array(cls_covs)
 
                     if cls_covs.shape[0] <= 0:
                         print(f"No covs for {cls} of sess {group}")
@@ -87,10 +124,56 @@ class RiemannianClf:
         centroids_X = np.array(centroids)
         centroids_y = np.array(centroids_y)
 
+        # Init the recentering centroid -> Distribution of the training data
+        self.recentering_centroid = mean_riemann(centroids_X)
+
         print(
             f"Training on {centroids_X.shape} centroids with {centroids_y.shape} labels."
         )
+
+        # Compute the Embd and plot it
+        # plot_embedding(
+        #     centroids_X,
+        #     centroids_y,
+        #     metric="riemann",
+        #     embd_type="Spectral",
+        #     normalize=True,
+        # )
+        plt.show(block=True)
+
         self.clf.fit(centroids_X, centroids_y)
+
+    def predict_with_recentering(self, covs):
+        predictions = []
+        predicted_covs = []
+        probabilities = []
+        try:
+            # `_extract_features` returns covariance matrices of shape:
+            # - (n_trials, n_channels, n_channels) for batch input
+            # - (n_channels, n_channels) for a single trial
+            covs = self._extract_features(covs)
+            if covs.ndim == 2:
+                covs = covs[np.newaxis, ...]
+
+            for cov in covs:
+                to_classify = cov[np.newaxis, ...]
+                self.adapt_distribution(to_classify)
+                cov = recentering(cov, self.recentering_centroid)
+                pred = self.clf.predict(cov)
+                proba = self.clf.predict_proba(cov)
+
+                predicted_covs.append(cov[0])
+                predictions.append(pred[0])
+                probabilities.append(proba[0])
+
+            return (
+                np.array(predictions),
+                np.array(probabilities),
+                np.array(predicted_covs),
+            )
+        except ValueError as e:
+            print(f"Error in feature extraction: {e}")
+            return None, None, None
 
     def predict(self, cov):
         """
@@ -103,7 +186,7 @@ class RiemannianClf:
         np.ndarray: Predicted class labels
         """
         cov = self._extract_features(cov)
-        return self.clf.predict(cov)
+        return self.clf.predict(cov), cov
 
     def predict_proba(self, cov):
         """
@@ -126,6 +209,19 @@ class RiemannianClf:
         except ValueError as e:
             print(f"Error in feature extraction: {e}")
             return None, None
+
+    def adapt_distribution(self, cov):
+        self.online_predictions += 1
+
+        adaptation_factor = 1 / (
+            self.online_predictions + 1
+        )  # Number of already used predictions for adaptation
+
+        new_rc = geodesic_riemann(self.recentering_centroid, cov, adaptation_factor)
+        if is_sym_pos_def(new_rc):
+            self.recentering_centroid = new_rc
+        else:
+            print("Moved centroid is not SPD!")
 
     # Adaptation based on: Towards Adaptive Classification using Riemannian Geometry approaches in Brain-Computer Interfaces
     def adapt(self, cov, prediction):
