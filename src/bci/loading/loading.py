@@ -87,12 +87,12 @@ def _get_raw_xdf_offline(
 
     Notes
     -----
-    TODO: Now we have more data, description needs to be revised
     The current implementation processes following types of recordings:
     1. Recordings with 16 channels and no channel information -> assign 16 channel labels from standard 1020 montage
     2. Recordings with 16 channels, and channel information exactly matches standard channel labels -> use existing channel labels
     3. Recordings with 17 channels -> P554 recordings with custom 16 channel labels + keyboard -> reorder channels to match standard
     4. Recordings with 24 channels -> discard the recording (different markers)
+    5. Recordings with channel information that does not match standard 10-20 montage -> use existing channel labels
 
     P554 recordings of types "blinking", "jaw_clenching", "Music" are discarded.
     """
@@ -136,8 +136,6 @@ def _get_raw_xdf_offline(
         "Oz",
     ]
 
-    target_codes = ["S001", "S101", "S102", "S103", "S104"]
-
     # Iterate through streams to find desired indices, extract EEG stream
     for i, stream in enumerate(streams):
         name = stream["info"]["name"][0]  # name of the stream
@@ -174,31 +172,6 @@ def _get_raw_xdf_offline(
 
         print(f"Channels in recording, total {len(eeg_channels)}:", eeg_channels)
         channel_labels = eeg_channels
-
-        if "sub-P999_ses-S001_task-comp_final_run-001_eeg" in trial.name:
-            print(
-                "Switched channels Cz and Fp2 detected. Assigning custom 16 channel labels + keyboard..."
-            )
-            custom_channels_p999 = [
-                "Fp1",
-                "Cz",
-                "F3",
-                "Fz",
-                "F4",
-                "T7",
-                "C3",
-                "Fp2",
-                "C4",
-                "T8",
-                "P3",
-                "Pz",
-                "P4",
-                "PO7",
-                "PO8",
-                "Oz",
-                "Keyboard",
-            ]
-            channel_labels = custom_channels_p999
 
         # Check if channels match expected labels
         if eeg_channels != standard_channels:
@@ -279,7 +252,7 @@ def _get_raw_xdf_offline(
 
     # Get EEG data - https://mne.tools/dev/auto_examples/io/read_xdf.html#ex-read-xdf
     data = streams[eeg_channel]["time_series"].T * 1e-6  # scaling the data to volts
-
+    
     if channel_labels[-1].lower() in ["ts", "impedances", "keyboard"]:
         print("Discarding the last channel (non-EEG channel).")
         data = data[:-1, :]
@@ -303,6 +276,7 @@ def _get_raw_xdf_offline(
     raw_data = mne.io.RawArray(data, info, verbose=False)
     raw_data.set_montage(montage)
 
+
     if "P554" in trial.name or ("sub-P999_ses-S001_task-comp_final_run-001_eeg" in trial.name):
         print("Reordering channels for standard 10-20 montage...")
         raw_data.reorder_channels(standard_channels)
@@ -312,20 +286,6 @@ def _get_raw_xdf_offline(
         f"Final channel labels used ({len(raw_data.ch_names)} channels):",
         raw_data.ch_names,
     )
-
-    # raw_data.filter(l_freq=1.0, h_freq=40.0)
-    # raw_data.plot()
-    # fig = raw_data.plot(duration=30, n_channels=16, show=False, block=False)
-
-    # print(f"Max value: {np.max(raw_data.get_data())}")
-    # print(f"Min value: {np.min(raw_data.get_data())}")
-    # print(f"Mean value: {np.mean(raw_data.get_data())}")
-
-    # # Save it
-    # save_dir = Path(root_dir)
-    # save_path = save_dir / "data"/ f"inspect_{trial.name}.png"
-    # fig.savefig(save_path, dpi=200)
-    # plt.close(fig)
 
     # In the case where the offline collected data (calibration from online) does not have any markers
     if event_channel is None:
@@ -364,6 +324,7 @@ def _get_raw_xdf_offline(
     markers.sort()
 
     return raw_data, markers, channel_labels
+
 
 
 def _standardize_and_map(raw, target_event_id):
