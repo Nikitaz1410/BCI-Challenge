@@ -217,11 +217,12 @@ class BCIEngine:
 
                 # --- 4. Classification ---
                 # Predict probabilities
-                probs = self.clf.predict_proba(self.buffer)
+                probs, cov = self.clf.predict_proba(self.buffer)
+                prediction = np.argmax(probs)
 
                 # Adapt the classifier if it is riemann
                 if isinstance(self.clf, RiemannianClf):
-                    self.clf.update_centroids()
+                    self.clf.adapt(cov, prediction)
 
                 if probs is None:
                     continue
@@ -237,7 +238,6 @@ class BCIEngine:
 
                     # --- 6. Evaluation --- #
                     if crt_label != UNKNOWN:
-                        prediction = np.argmax(buffer_proba)
                         ground_truth = CMD_MAP[crt_label]
 
                         # Stats & Logging
