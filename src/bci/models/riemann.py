@@ -7,6 +7,7 @@ from pyriemann.utils.base import invsqrtm
 from pyriemann.utils.tangentspace import log_map_riemann, tangent_space
 from pyriemann.utils.test import is_sym_pos_def
 from pyriemann.utils.mean import mean_riemann
+from pyriemann.utils.geodesic import geodesic_riemann
 from sklearn.externals._packaging.version import Optional
 from sklearn.externals.array_api_compat.numpy import bool_, sign
 
@@ -22,6 +23,7 @@ class RiemannianClf:
         """
         self.clf = FgMDM()  # Initialize the FgMDM classifier from pyriemann
         self.cov_est = cov_est  # Store the covariance estimator type
+        self.online_predictions = 0  # Needed for realtime adaptation
 
     def fit(self, signals, y):
         """
@@ -36,39 +38,46 @@ class RiemannianClf:
         self.clf.fit(covs, y)
 
     # Approach
-    # Create class centroids for each subject
-    # Optional: Recenter Data to Baseline (Inter-Subject Variability)
+    # Create class centroids for each subject/session
+    # Optional: Recenter Data to Baseline - Session Centroid (Inter-Subject/Session Variability)
     # Train the model on the class centroids
     # Optional: Finetune to one of Fina's sessions (Recentering Formula, Geodesic Interpolation)
     def fit_centered(self, signals, y, groups):
         covs = self._extract_features(signals)
         # TODO: Add recentering? (Normalization)
 
-        subjects = np.unique(groups)
+        unique_groups = np.unique(groups)
         classes = np.unique(y)
 
         centroids = []
+        centroids_y = []
 
-        centroids_y = np.zeros((classes.shape[0] * subjects.shape[0]))
+        for group_id, group in enumerate(unique_groups):
+            # Compute the centroids of the group (sessions | subjects)
+            signal_idx = np.where(groups == group)[0]
+            grouped_covs = covs[signal_idx, :, :]
+            grouped_y = y[signal_idx]
 
-        for cls_id, cls in enumerate(classes):
-            for subject_id, subject in enumerate(subjects):
-                # Compute the centroids of the class cls_id of subject subject_id
-                signal_idx = np.where((y == cls) & (groups == subject))[0]
-                subject_cls_covs = covs[signal_idx, :, :]
-                centroid = mean_riemann(subject_cls_covs)
+            # Add recentering to session centroid to have better class separation
+            centroid = mean_riemann(grouped_covs)
+
+            # Compute the centered covs
+            recentered_covs = recentering(grouped_covs, centroid)
+
+            for cls_id, cls in enumerate(classes):
+                cls_covs = recentered_covs[grouped_y == cls]
+                cls_covs = np.array(cls_covs)
+
                 if not is_sym_pos_def(centroid):
-                    print(f"Problem with Centroid of {cls}, {subject}!")
+                    print(f"Problem with Centroid of {cls}, {group}!")
                 else:
-                    centroids.append(centroid)
-
-        for cls_id in range(classes.shape[0]):
-            centroids_y[
-                cls_id * subjects.shape[0] : (cls_id + 1) * subjects.shape[0]
-            ] = classes[cls_id]
+                    # Compute the class-centroid
+                    centroids.append(mean_riemann(cls_covs))
+                    centroids_y.append(cls)
 
         # Fit the classifier based on the
         centroids_X = np.array(centroids)
+        centroids_y = np.array(centroids_y)
 
         print(
             f"Training on {centroids_X.shape} centroids with {centroids_y.shape} labels."
@@ -105,17 +114,44 @@ class RiemannianClf:
             cov = self._extract_features(cov)
             if cov.ndim == 2:
                 cov = cov[np.newaxis, ...]
-            return self.clf.predict_proba(cov)
+            return self.clf.predict_proba(cov), cov
         except ValueError as e:
             print(f"Error in feature extraction: {e}")
-            return None
+            return None, None
 
-    def update_centroids(self):
+    # Adaptation based on: Towards Adaptive Classification using Riemannian Geometry approaches in Brain-Computer Interfaces
+    def adapt(self, cov, prediction):
         """
-        Placeholder for online adaptability (not implemented).
+        Adapt the classifier by moving the class centroid towards the input covariance matrix.
+
+        This method implements online adaptation by adjusting the class centroid in Riemannian space
+        based on the current prediction. The adaptation factor decreases with each update to
+        gradually incorporate new information while maintaining stability.
+
+        Parameters:
+        cov (np.ndarray): Input covariance matrix to adapt towards
+        prediction (int): Predicted class label for the input covariance
         """
 
-        adaptation_factor = 0
+        # Move the class centroid in the riemann space towards the handled covariance
+        # The class is the predicted class (How do we explain this?)
+
+        self.online_predictions += 1
+
+        adaptation_factor = 1 / (
+            self.online_predictions + 1
+        )  # Number of already used predictions for adaptation
+
+        # print(f"Move Towards: {prediction} by {adaptation_factor} geodesic units.")
+
+        cls_centroid = self.clf._mdm.covmeans_[prediction]
+        moved_cls_centroid = geodesic_riemann(cls_centroid, cov, adaptation_factor)
+
+        if is_sym_pos_def(moved_cls_centroid):
+            # Replace the centroid of the clf
+            self.clf._mdm.covmeans_[prediction] = moved_cls_centroid
+        else:
+            print("Moved centroid is not SPD!")
 
     def _extract_features(self, signals):
         """

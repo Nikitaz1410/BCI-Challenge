@@ -117,7 +117,6 @@ if __name__ == "__main__":
 
     print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
 
-
     """ Target subject data after loading:
     Total number of GENERAL files available: 6
     Total number of DINO files available: 19
@@ -278,7 +277,7 @@ if __name__ == "__main__":
 
             # Evaluate on validation fold
             fold_predictions = clf.predict(X_val_clean)
-            fold_probabilities = clf.predict_proba(X_val_clean)
+            fold_probabilities, _ = clf.predict_proba(X_val_clean)
 
             # Compute metrics for this fold
             fold_metrics = compile_metrics(
@@ -419,7 +418,7 @@ if __name__ == "__main__":
         start_eval_time = time.time() * 1000
         test_predictions = clf.predict(X_test_clean)
         end_eval_time = time.time() * 1000
-        test_probabilities = clf.predict_proba(X_test_clean)
+        test_probabilities, _ = clf.predict_proba(X_test_clean)
 
         end_total_time = time.time() * 1000
 
