@@ -29,6 +29,8 @@ Usage:
     python main_offline_Baseline.py
 """
 
+import pickle
+import random
 import re
 import sys
 import time
@@ -233,6 +235,7 @@ def run_cv_for_config(
                 "features": model_config["features"],
                 "classifier": model_config["classifier"],
                 "scale": model_config["scale"],
+                "random_state": config.random_state,
             },
         )
 
@@ -310,7 +313,8 @@ def run_baseline_comparison_pipeline():
         print(f"Error loading config: {e}")
         sys.exit(1)
 
-    # Initialize variables
+    # Initialize variables - set all seeds for reproducibility
+    random.seed(config.random_state)
     np.random.seed(config.random_state)
 
     # Number of folds = number of sessions (leave-one-session-out CV)
@@ -353,8 +357,8 @@ def run_baseline_comparison_pipeline():
             all_target_raws,
             all_target_events,
             target_metadata["filenames"],
-            num_general=0,
-            num_dino=13,
+            num_general=3,
+            num_dino=17,
             num_supression=0,
             shuffle=True,
         )
@@ -526,23 +530,40 @@ def run_baseline_comparison_pipeline():
             step_size=config.step_size,
         )
 
-        final_clf = choose_model(
-            "baseline",
-            {
-                "features": best_config["features"],
-                "classifier": best_config["classifier"],
-                "scale": best_config["scale"],
-            },
+        # Artifact removal (same as in CV)
+        ar = ArtefactRemoval()
+        ar.get_rejection_thresholds(X_train_windows, config)
+        X_train_clean, y_train_clean = ar.reject_bad_epochs(
+            X_train_windows, y_train_windows
         )
 
-        final_clf.fit(X_train_windows, y_train_windows)
+        if len(X_train_clean) == 0:
+            print("Warning: No data left after artifact rejection. Skipping final model save.")
+        else:
+            final_clf = choose_model(
+                "baseline",
+                {
+                    "features": best_config["features"],
+                    "classifier": best_config["classifier"],
+                    "scale": best_config["scale"],
+                    "random_state": config.random_state,
+                },
+            )
 
-        # Save the best model
-        model_dir = current_wd / "resources" / "models"
-        model_dir.mkdir(parents=True, exist_ok=True)
-        model_path = model_dir / "baseline_best_model.pkl"
-        final_clf.save(str(model_path))
-        print(f"Best model saved to: {model_path}")
+            final_clf.fit(X_train_clean, y_train_clean)
+
+            # Save the best model and ArtefactRemoval
+            model_dir = current_wd / "resources" / "models"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            model_path = model_dir / "baseline_best_model.pkl"
+            artefact_path = model_dir / "artefact_removal.pkl"
+
+            final_clf.save(str(model_path))
+            with open(artefact_path, "wb") as f:
+                pickle.dump(ar, f)
+
+            print(f"Best model saved to: {model_path}")
+            print(f"ArtefactRemoval saved to: {artefact_path}")
 
     return all_results, df_results
 

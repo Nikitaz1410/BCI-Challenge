@@ -77,8 +77,7 @@ class BCIEngine:
         self.signal_filter = Filter(self.config, online=True)
 
         # Classifier
-        model_args = {"cov_est": "lwf"}
-        self.clf = RiemannianClf(model_args).load(model_path)
+        self.clf = RiemannianClf(cov_est="lwf").load(model_path)
 
         # Artifact Rejection
         with open(artifact_path, "rb") as f:

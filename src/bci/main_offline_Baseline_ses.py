@@ -1,7 +1,7 @@
 """
-Offline Training and Testing Pipeline for the MIRepNet Foundation Model.
+Offline Training and Testing Pipeline for the Baseline (AllRounder) Model.
 
-This script compares multiple hyperparameter configurations using
+This script compares multiple feature/classifier configurations using
 session-wise grouped cross-validation.
 
 Pipeline:
@@ -14,15 +14,19 @@ Pipeline:
    - Collect metrics
 6. Compare all configurations in a summary table
 
-Supported hyperparameter variations:
-- Batch size
-- Number of epochs
-- Learning rate
-- Optimizer (Adam, SGD)
-- Scheduler (Cosine, Step, None)
+Supported feature extractors:
+- CSP (Common Spatial Patterns)
+- Welch band power
+- Lateralization features
+
+Supported classifiers:
+- LDA (Linear Discriminant Analysis)
+- SVM (Support Vector Machine)
+- Logistic Regression
+- Random Forest
 
 Usage:
-    python main_offline_MIRepNet.py
+    python main_offline_Baseline.py
 """
 
 import random
@@ -30,9 +34,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-import torch
+from typing import Any, Dict, List
 
 # Add src directory to Python path to allow imports
 src_dir = Path(__file__).parent.parent
@@ -49,6 +51,7 @@ from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
 from bci.loading.loading import (
+    create_subject_test_set,
     create_subject_train_set,
     load_target_subject_data,
 )
@@ -61,17 +64,6 @@ from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fol
 # Utils
 from bci.utils.bci_config import load_config
 from bci.utils.utils import choose_model
-
-
-def _set_reproducibility(seed: int) -> None:
-    """Set all random seeds and deterministic flags for reproducible results."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
 
 
 def _session_id_from_filename(filename: str) -> str:
@@ -95,77 +87,61 @@ def _session_id_from_filename(filename: str) -> str:
 # Model Configurations to Compare
 # =============================================================================
 MODEL_CONFIGURATIONS: List[Dict[str, Any]] = [
-    # Default configuration
+    # CSP + LDA 
     {
-        "name": "MIRepNet (Default)",
-        "batch_size": 32,
-        "epochs": 10,
-        "lr": 0.001,
-        "optimizer": "adam",
-        "scheduler": "cosine",
+        "name": "CSP + LDA",
+        "features": "csp",
+        "classifier": "lda",
+        "scale": True,
     },
-    # Higher learning rate
+    # CSP + SVM
     {
-        "name": "MIRepNet (LR=0.005)",
-        "batch_size": 32,
-        "epochs": 10,
-        "lr": 0.005,
-        "optimizer": "adam",
-        "scheduler": "cosine",
+        "name": "CSP + SVM",
+        "features": "csp",
+        "classifier": "svm",
+        "scale": True,
     },
-    # Lower learning rate
+    # CSP + Logistic Regression
     {
-        "name": "MIRepNet (LR=0.0005)",
-        "batch_size": 32,
-        "epochs": 10,
-        "lr": 0.0005,
-        "optimizer": "adam",
-        "scheduler": "cosine",
+        "name": "CSP + LogReg",
+        "features": "csp",
+        "classifier": "logreg",
+        "scale": True,
     },
-    # More epochs
+    # Band power + LDA
     {
-        "name": "MIRepNet (20 epochs)",
-        "batch_size": 32,
-        "epochs": 20,
-        "lr": 0.001,
-        "optimizer": "adam",
-        "scheduler": "cosine",
+        "name": "BandPower + LDA",
+        "features": "welch_bandpower",
+        "classifier": "lda",
+        "scale": True,
     },
-    # Larger batch size
+    # Band power + SVM
     {
-        "name": "MIRepNet (BS=64)",
-        "batch_size": 64,
-        "epochs": 10,
-        "lr": 0.001,
-        "optimizer": "adam",
-        "scheduler": "cosine",
+        "name": "BandPower + SVM",
+        "features": "welch_bandpower",
+        "classifier": "svm",
+        "scale": True,
     },
-    # SGD optimizer
+    # CSP + Band power + LDA (combined features)
     {
-        "name": "MIRepNet (SGD)",
-        "batch_size": 32,
-        "epochs": 10,
-        "lr": 0.001,
-        "optimizer": "sgd",
-        "scheduler": "cosine",
+        "name": "CSP+BP + LDA",
+        "features": ["csp", "welch_bandpower"],
+        "classifier": "lda",
+        "scale": True,
     },
-    # Step scheduler
+    # CSP + Band power + SVM
     {
-        "name": "MIRepNet (Step Sched.)",
-        "batch_size": 32,
-        "epochs": 10,
-        "lr": 0.001,
-        "optimizer": "adam",
-        "scheduler": "step",
+        "name": "CSP+BP + SVM",
+        "features": ["csp", "welch_bandpower"],
+        "classifier": "svm",
+        "scale": True,
     },
-    # No scheduler
+    # CSP + Band power + Random Forest
     {
-        "name": "MIRepNet (No Sched.)",
-        "batch_size": 32,
-        "epochs": 10,
-        "lr": 0.001,
-        "optimizer": "adam",
-        "scheduler": "none",
+        "name": "CSP+BP + RF",
+        "features": ["csp", "welch_bandpower"],
+        "classifier": "rf",
+        "scale": True,
     },
 ]
 
@@ -178,17 +154,15 @@ def run_cv_for_config(
     y_train: np.ndarray,
     config: Any,
     n_classes: int,
-    channel_names: List[str],
     n_folds: int = 5,
-    use_artifact_rejection: bool = False,
 ) -> Dict[str, Any]:
     """
-    Run cross-validation for a single MIRepNet model configuration.
+    Run cross-validation for a single model configuration.
 
     Parameters
     ----------
     model_config : dict
-        Model configuration with hyperparameters
+        Model configuration with 'name', 'features', 'classifier', 'scale'
     combined_epochs : mne.Epochs
         Combined epochs for all training data
     groups : np.ndarray
@@ -201,12 +175,8 @@ def run_cv_for_config(
         Configuration object with window_size, step_size, etc.
     n_classes : int
         Number of classes
-    channel_names : list
-        List of channel names after preprocessing
     n_folds : int
         Number of CV folds
-    use_artifact_rejection : bool
-        Whether to apply artifact rejection (default False for deep learning)
 
     Returns
     -------
@@ -221,16 +191,18 @@ def run_cv_for_config(
     gkf = GroupKFold(n_splits=n_folds)
     cv_metrics_list = []
     fold_times = []
+    per_session_results = []  # [(test_session, metrics), ...]
 
     for fold_idx, (train_idx, val_idx) in enumerate(
         gkf.split(X_train, y_train, groups=groups)
     ):
         fold_start = time.time()
-        print(f"  Fold {fold_idx + 1}/{n_folds}...", end=" ")
+        # Identify which session(s) are in the test fold
+        test_sessions = np.unique(groups[val_idx]).tolist()
+        test_session_str = ", ".join(test_sessions) if test_sessions else "?"
+        print(f"  Fold {fold_idx + 1}/{n_folds} (test: {test_session_str})...", end=" ")
 
-        # Extract windows *after* the train/val split: train windows come only from
-        # train epochs, val windows only from val epochs (no trial-level leakage).
-        # Windows are overlapping (step_size < window_size); metrics are per-window.
+        # Extract windowed epochs for this fold
         fold_windowed_epochs = epochs_windows_from_fold(
             combined_epochs,
             groups,
@@ -245,43 +217,28 @@ def run_cv_for_config(
         X_val_fold = fold_windowed_epochs["X_val"]
         y_val_fold = fold_windowed_epochs["y_val"]
 
-        # Optional: Artifact removal within each fold
-        # Deep learning models are generally more robust to artifacts,
-        # so this is disabled by default
-        if use_artifact_rejection:
-            ar = ArtefactRemoval()
-            ar.get_rejection_thresholds(X_train_fold, config)
+        # Artifact removal within each fold
+        ar = ArtefactRemoval()
+        ar.get_rejection_thresholds(X_train_fold, config)
 
-            X_train_clean, y_train_clean = ar.reject_bad_epochs(
-                X_train_fold, y_train_fold
-            )
-            X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
+        X_train_clean, y_train_clean = ar.reject_bad_epochs(
+            X_train_fold, y_train_fold
+        )
+        X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
 
-            # Skip if no data left after artifact rejection
-            if len(X_train_clean) == 0 or len(X_val_clean) == 0:
-                print("Skipped (no data after AR)")
-                continue
-        else:
-            X_train_clean, y_train_clean = X_train_fold, y_train_fold
-            X_val_clean, y_val_clean = X_val_fold, y_val_fold
-
-        # Skip if no data available
+        # Skip if no data left after artifact rejection
         if len(X_train_clean) == 0 or len(X_val_clean) == 0:
-            print("Skipped (no data)")
+            print("Skipped (no data after AR)")
             continue
 
-        # Create and train the MIRepNet model (fold-specific seed for reproducibility)
-        fold_seed = config.random_state + fold_idx * 1000
+        # Create and train the model
         clf = choose_model(
-            "mirepnet",
+            "baseline",
             {
-                "batch_size": model_config["batch_size"],
-                "epochs": model_config["epochs"],
-                "lr": model_config["lr"],
-                "optimizer": model_config["optimizer"],
-                "scheduler": model_config["scheduler"],
-                "actual_channels": channel_names,
-                "random_state": fold_seed,
+                "features": model_config["features"],
+                "classifier": model_config["classifier"],
+                "scale": model_config["scale"],
+                "random_state": config.random_state,
             },
         )
 
@@ -302,14 +259,13 @@ def run_cv_for_config(
             )
 
             cv_metrics_list.append(fold_metrics)
+            per_session_results.append((test_session_str, fold_metrics.copy()))
             fold_time = time.time() - fold_start
             fold_times.append(fold_time)
             print(f"Acc: {fold_metrics['Acc.']:.4f} ({fold_time:.1f}s)")
 
         except Exception as e:
             print(f"Error: {e}")
-            import traceback
-            traceback.print_exc()
             continue
 
     # Aggregate results
@@ -321,6 +277,7 @@ def run_cv_for_config(
             "F1 Score": "N/A",
             "ECE": "N/A",
             "Brier": "N/A",
+            "per_session": [],
         }
 
     # Compute mean and std for each metric
@@ -339,28 +296,17 @@ def run_cv_for_config(
     # Add timing info
     result["Avg. Fold Time (s)"] = f"{np.mean(fold_times):.1f}"
 
+    # Attach per-session results for later display
+    result["per_session"] = per_session_results
+
     return result
 
 
-def run_mirepnet_comparison_pipeline(
-    configurations: Optional[List[Dict[str, Any]]] = None,
-    use_artifact_rejection: bool = False,
-):
+def run_baseline_comparison_pipeline():
     """
-    Main pipeline that compares multiple MIRepNet configurations using
+    Main pipeline that compares multiple model configurations using
     session-wise grouped cross-validation.
-
-    Parameters
-    ----------
-    configurations : list, optional
-        List of model configurations to evaluate. If None, uses MODEL_CONFIGURATIONS.
-    use_artifact_rejection : bool
-        Whether to apply artifact rejection (default False for deep learning)
     """
-    # Use default configurations if none provided
-    if configurations is None:
-        configurations = MODEL_CONFIGURATIONS
-
     # =========================================================================
     # 1. Load Configuration
     # =========================================================================
@@ -376,9 +322,11 @@ def run_mirepnet_comparison_pipeline(
         sys.exit(1)
 
     # Initialize variables - set all seeds for reproducibility
-    _set_reproducibility(config.random_state)
+    random.seed(config.random_state)
+    np.random.seed(config.random_state)
 
-    # n_folds will be set to number of sessions after loading data
+    # Number of folds = number of sessions (leave-one-session-out CV)
+    print("Using session-wise cross-validation (n_folds = n_sessions).")
 
     # Initialize filter
     filter_obj = Filter(config, online=False)
@@ -433,8 +381,6 @@ def run_mirepnet_comparison_pipeline(
     print("=" * 60)
 
     all_epochs_list = []
-    channel_names_after_preprocessing = None
-
     for raw, events, sub_id, filename in zip(
         x_raw_train, events_train, sub_ids_train, train_filenames
     ):
@@ -442,11 +388,8 @@ def run_mirepnet_comparison_pipeline(
         filtered_raw = raw.copy()
         filtered_raw.apply_function(filter_obj.apply_filter_offline)
 
-        # Use all channels (no channel removal for MIRepNet)
-
-        # Store channel names after preprocessing (for MIRepNet)
-        if channel_names_after_preprocessing is None:
-            channel_names_after_preprocessing = filtered_raw.ch_names.copy()
+        # CHANNEL REMOVAL: Remove unnecessary channels (noise sources)
+        filtered_raw.drop_channels(config.remove_channels)
 
         # EPOCHING: Create epochs with metadata for CV
         epochs = mne.Epochs(
@@ -491,31 +434,29 @@ def run_mirepnet_comparison_pipeline(
     # Groups for CV: by session (multiple files can share one session)
     groups = combined_epochs.metadata["session"].values
 
-    # Get unique sessions; number of folds = number of sessions (leave-one-session-out CV)
+    # Get unique sessions
     unique_sessions = np.unique(groups)
-    n_folds = len(unique_sessions)
-    print(f"Using {n_folds}-fold cross-validation (one fold per session, grouped by session).")
+    n_folds = len(unique_sessions)  # One fold per session (leave-one-session-out)
 
     print(f"Training data shape: {X_train.shape}")
     print(f"Labels distribution: {np.unique(y_train, return_counts=True)}")
     print(f"Number of sessions (CV groups): {len(unique_sessions)}")
     print(f"Sessions: {list(unique_sessions)}")
-    print(f"Channel names for MIRepNet: {channel_names_after_preprocessing}")
+    print(f"Adjusted folds for CV: {n_folds}")
 
     # =========================================================================
     # 4. Run Cross-Validation for Each Configuration
     # =========================================================================
     print("\n" + "=" * 60)
-    print("COMPARING MIREPNET CONFIGURATIONS")
+    print("COMPARING MODEL CONFIGURATIONS")
     print("=" * 60)
-    print(f"Total configurations to evaluate: {len(configurations)}")
-    print(f"Artifact rejection: {'Enabled' if use_artifact_rejection else 'Disabled'}")
+    print(f"Total configurations to evaluate: {len(MODEL_CONFIGURATIONS)}")
 
     all_results = []
     n_classes = len(target_event_id)
 
-    for config_idx, model_config in enumerate(configurations):
-        print(f"\n[{config_idx + 1}/{len(configurations)}] ", end="")
+    for config_idx, model_config in enumerate(MODEL_CONFIGURATIONS):
+        print(f"\n[{config_idx + 1}/{len(MODEL_CONFIGURATIONS)}] ", end="")
 
         result = run_cv_for_config(
             model_config=model_config,
@@ -525,9 +466,7 @@ def run_mirepnet_comparison_pipeline(
             y_train=y_train,
             config=config,
             n_classes=n_classes,
-            channel_names=channel_names_after_preprocessing,
             n_folds=n_folds,
-            use_artifact_rejection=use_artifact_rejection,
         )
 
         all_results.append(result)
@@ -545,10 +484,12 @@ def run_mirepnet_comparison_pipeline(
         except (ValueError, IndexError):
             return -1.0
 
-    all_results_sorted = sorted(all_results, key=_f1_sort_key, reverse=True)
+    all_results_sorted = sorted(
+        all_results, key=_f1_sort_key, reverse=True
+    )
 
     print("\n" + "=" * 80)
-    print("MIREPNET MODEL COMPARISON RESULTS (sorted by F1 Score, descending)")
+    print("MODEL COMPARISON RESULTS (sorted by F1 Score, descending)")
     print("=" * 80)
     print(f"Cross-Validation: {n_folds}-fold, grouped by session (sub-XXX_ses-YYY)")
     print(f"Total sessions: {len(unique_sessions)}")
@@ -559,6 +500,78 @@ def run_mirepnet_comparison_pipeline(
     comparison_table = MetricsTable()
     comparison_table.add_rows(all_results_sorted)
     comparison_table.display()
+
+    # =========================================================================
+    # 5b. Per-session (per test fold) performance
+    # =========================================================================
+    print("\n" + "=" * 80)
+    print("PER-SESSION PERFORMANCE (when session X was held out as test set)")
+    print("=" * 80)
+
+    # Build consolidated matrix: rows = test session, columns = model, cells = Acc.
+    session_to_acc = {}  # test_session -> {model_name: acc}
+    for result in all_results_sorted:
+        model_name = result.get("Model", "?")
+        for test_session, metrics in result.get("per_session", []):
+            if test_session not in session_to_acc:
+                session_to_acc[test_session] = {}
+            acc = metrics.get("Acc.", np.nan)
+            session_to_acc[test_session][model_name] = (
+                f"{acc:.4f}" if isinstance(acc, (int, float)) else str(acc)
+            )
+
+    if session_to_acc:
+        models_ordered = [r["Model"] for r in all_results_sorted]
+        sessions_ordered = sorted(session_to_acc.keys())
+        matrix_rows = []
+        for sess in sessions_ordered:
+            row = {"Test Session": sess}
+            for m in models_ordered:
+                row[m] = session_to_acc[sess].get(m, "N/A")
+            matrix_rows.append(row)
+        print("\nAccuracy by test session (rows) and model (columns):")
+        acc_matrix_table = MetricsTable()
+        acc_matrix_table.add_rows(matrix_rows)
+        acc_matrix_table.display()
+
+    for result in all_results_sorted:
+        model_name = result.get("Model", "?")
+        per_session = result.get("per_session", [])
+        if not per_session:
+            print(f"\n{model_name}: No per-session data.")
+            continue
+
+        print(f"\n{model_name}:")
+        print("-" * 60)
+        session_rows = []
+        for test_session, metrics in per_session:
+            acc = metrics.get("Acc.", "N/A")
+            b_acc = metrics.get("B. Acc.", "N/A")
+            f1 = metrics.get("F1 Score", "N/A")
+            ece = metrics.get("ECE", "N/A")
+            brier = metrics.get("Brier", "N/A")
+
+            def _fmt(v):
+                return f"{v:.4f}" if isinstance(v, (int, float)) else str(v)
+
+            row = {
+                "Test Session": test_session,
+                "Acc.": _fmt(acc),
+                "B. Acc.": _fmt(b_acc),
+                "F1 Score": _fmt(f1),
+                "ECE": _fmt(ece),
+                "Brier": _fmt(brier),
+            }
+            session_rows.append(row)
+            print(
+                f"  {test_session}: Acc={_fmt(acc)}, "
+                f"B.Acc={_fmt(b_acc)}, F1={_fmt(f1)}, ECE={_fmt(ece)}, Brier={_fmt(brier)}"
+            )
+
+        # Add per-session table for this model
+        ps_table = MetricsTable()
+        ps_table.add_rows(session_rows)
+        ps_table.display()
 
     # Also create a pandas DataFrame for easier analysis (sorted)
     df_results = pd.DataFrame(all_results_sorted)
@@ -577,7 +590,7 @@ def run_mirepnet_comparison_pipeline(
     best_config_name = best_result.get("Model", "") if best_result else ""
 
     if best_result and best_f1 >= 0:
-        for model_config in configurations:
+        for model_config in MODEL_CONFIGURATIONS:
             if model_config["name"] == best_config_name:
                 best_config = model_config
                 break
@@ -588,7 +601,7 @@ def run_mirepnet_comparison_pipeline(
         print(f"Configuration: {best_config}")
 
         # Train final model with best configuration on all data
-        print("\nTraining final model with best configuration on all data...")
+        print("\nTraining final model with best configuration...")
 
         X_train_windows, y_train_windows, _ = epochs_to_windows(
             combined_epochs,
@@ -597,18 +610,13 @@ def run_mirepnet_comparison_pipeline(
             step_size=config.step_size,
         )
 
-        print(f"Training on {len(X_train_windows)} windows...")
-
         final_clf = choose_model(
-            "mirepnet",
+            "baseline",
             {
-                "batch_size": best_config["batch_size"],
-                "epochs": best_config["epochs"],
-                "lr": best_config["lr"],
-                "optimizer": best_config["optimizer"],
-                "scheduler": best_config["scheduler"],
-                "actual_channels": channel_names_after_preprocessing,
-                "random_state": config.random_state + 9999,
+                "features": best_config["features"],
+                "classifier": best_config["classifier"],
+                "scale": best_config["scale"],
+                "random_state": config.random_state,
             },
         )
 
@@ -617,59 +625,12 @@ def run_mirepnet_comparison_pipeline(
         # Save the best model
         model_dir = current_wd / "resources" / "models"
         model_dir.mkdir(parents=True, exist_ok=True)
-        model_path = model_dir / "mirepnet_best_model.pt"
+        model_path = model_dir / "baseline_best_model.pkl"
         final_clf.save(str(model_path))
         print(f"Best model saved to: {model_path}")
 
     return all_results, df_results
 
 
-def run_single_mirepnet_config(
-    batch_size: int = 32,
-    epochs: int = 10,
-    lr: float = 0.001,
-    optimizer: str = "adam",
-    scheduler: str = "cosine",
-    use_artifact_rejection: bool = False,
-):
-    """
-    Run training and evaluation for a single MIRepNet configuration.
-
-    This is a convenience function for users who want to run a single
-    configuration without comparing multiple hyperparameter settings.
-
-    Parameters
-    ----------
-    batch_size : int
-        Batch size for training (default: 32)
-    epochs : int
-        Number of training epochs (default: 10)
-    lr : float
-        Learning rate (default: 0.001)
-    optimizer : str
-        Optimizer to use: 'adam' or 'sgd' (default: 'adam')
-    scheduler : str
-        Learning rate scheduler: 'cosine', 'step', or 'none' (default: 'cosine')
-    use_artifact_rejection : bool
-        Whether to apply artifact rejection (default False for deep learning)
-    """
-    single_config = [
-        {
-            "name": f"MIRepNet (BS={batch_size}, E={epochs}, LR={lr})",
-            "batch_size": batch_size,
-            "epochs": epochs,
-            "lr": lr,
-            "optimizer": optimizer,
-            "scheduler": scheduler,
-        }
-    ]
-
-    return run_mirepnet_comparison_pipeline(
-        configurations=single_config,
-        use_artifact_rejection=use_artifact_rejection,
-    )
-
-
 if __name__ == "__main__":
-    # Run the full comparison pipeline
-    all_results, df_results = run_mirepnet_comparison_pipeline()
+    all_results, df_results = run_baseline_comparison_pipeline()
