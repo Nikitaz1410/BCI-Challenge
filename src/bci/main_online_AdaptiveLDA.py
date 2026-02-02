@@ -134,7 +134,7 @@ if __name__ == "__main__":
     else:
         channel_indices_to_keep = list(range(len(config.channels)))
         n_channels_after_removal = len(config.channels)
-    
+
     # Buffers for storing incoming data
     # Buffer size matches number of channels after removal
     buffer = np.zeros((n_channels_after_removal, int(config.window_size)), dtype=np.float32)

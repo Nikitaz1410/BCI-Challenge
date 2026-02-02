@@ -49,7 +49,8 @@ class HybridLDA:
     """
 
     def __init__(self, move_threshold=0.6, always_run_stage_b=True,
-                 reg=1e-2, shrinkage_alpha=None, uc_mu=0.4 * 2**-6):
+                 reg=1e-2, shrinkage_alpha=None, uc_mu=0.4 * 2**-6,
+                 use_improved_composition=False):
         """
         Initialize Hybrid 2-Stage LDA.
 
@@ -66,12 +67,17 @@ class HybridLDA:
         uc_mu : float
             Update coefficient for mean adaptation (default: 0.00625 from Wu et al.)
             Used in online update: mu_new = (1 - uc_mu) * mu_old + uc_mu * x
+        use_improved_composition : bool
+            If True, uses confidence-weighted Stage B probabilities instead of simple multiplication.
+            When Stage B is uncertain, blends toward uniform (0.5/0.5) distribution.
+            This produces better calibrated probabilities and reduces overconfidence.
         """
         self.move_threshold = move_threshold
         self.always_run_stage_b = always_run_stage_b
         self.reg = reg
         self.shrinkage_alpha = shrinkage_alpha
         self.uc_mu = uc_mu
+        self.use_improved_composition = use_improved_composition
 
         # Stage A: Rest vs Movement
         self.stage_a_means_ = None
@@ -230,9 +236,28 @@ class HybridLDA:
             p_right_given_move = probs_b[:, 1]
 
             # Compose probabilities
-            probs_3class[:, 0] = p_rest  # Rest
-            probs_3class[:, 1] = p_move * p_left_given_move  # Left
-            probs_3class[:, 2] = p_move * p_right_given_move  # Right
+            if self.use_improved_composition:
+                # Improved composition with confidence weighting
+                # Compute Stage B confidence
+                stage_b_confidence = np.maximum(p_left_given_move, p_right_given_move)
+                # Convert confidence to weight: maps [0.5, 1.0] -> [0, 1]
+                stage_b_weight = np.clip(stage_b_confidence * 2 - 1, 0, 1)
+                
+                # Confidence-weighted composition
+                probs_3class[:, 0] = p_rest  # Rest stays the same
+                probs_3class[:, 1] = p_move * (
+                    stage_b_weight * p_left_given_move +
+                    (1 - stage_b_weight) * 0.5
+                )
+                probs_3class[:, 2] = p_move * (
+                    stage_b_weight * p_right_given_move +
+                    (1 - stage_b_weight) * 0.5
+                )
+            else:
+                # Simple composition (original method)
+                probs_3class[:, 0] = p_rest  # Rest
+                probs_3class[:, 1] = p_move * p_left_given_move  # Left
+                probs_3class[:, 2] = p_move * p_right_given_move  # Right
         else:
             # Only run Stage B if movement is confident
             for i in range(n_samples):
@@ -250,8 +275,21 @@ class HybridLDA:
                     p_right_given_move = probs_b_i[0, 1]
 
                     probs_3class[i, 0] = p_rest[i]
-                    probs_3class[i, 1] = p_move[i] * p_left_given_move
-                    probs_3class[i, 2] = p_move[i] * p_right_given_move
+                    if self.use_improved_composition:
+                        # Improved composition with confidence weighting
+                        stage_b_confidence = max(p_left_given_move, p_right_given_move)
+                        stage_b_weight = np.clip(stage_b_confidence * 2 - 1, 0, 1)
+                        probs_3class[i, 1] = p_move[i] * (
+                            stage_b_weight * p_left_given_move +
+                            (1 - stage_b_weight) * 0.5
+                        )
+                        probs_3class[i, 2] = p_move[i] * (
+                            stage_b_weight * p_right_given_move +
+                            (1 - stage_b_weight) * 0.5
+                        )
+                    else:
+                        probs_3class[i, 1] = p_move[i] * p_left_given_move
+                        probs_3class[i, 2] = p_move[i] * p_right_given_move
                 else:
                     # Skip Stage B, assign all movement probability equally
                     probs_3class[i, 0] = p_rest[i]

@@ -1,10 +1,10 @@
 import re
 from typing import Any, Dict, Optional
 
-from bci.models.Baseline import AllRounderBCIModel
-from bci.models.MIRepNet import MIRepNetModel
-from bci.models.riemann import RiemannianClf
-from bci.models.SAE import SAEModel
+from bci.Models.Baseline import AllRounderBCIModel
+from bci.Models.MIRepNet import MIRepNetModel
+from bci.Models.riemann import RiemannianClf
+from bci.Models.SAE import SAEModel
 
 
 def choose_model(model_name: str, model_params: Optional[Dict[str, Any]] = None):
