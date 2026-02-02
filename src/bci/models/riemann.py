@@ -110,11 +110,12 @@ class RiemannianClf:
             print(f"Error in feature extraction: {e}")
             return None
 
-    def _update_centroids(self):
+    def update_centroids(self):
         """
         Placeholder for online adaptability (not implemented).
         """
-        pass
+
+        adaptation_factor = 0
 
     def _extract_features(self, signals):
         """
@@ -237,7 +238,7 @@ def compute_covariances(data: np.ndarray, cov_est: str = "") -> np.ndarray:
     )  # n_samples is not used, but kept for clarity
 
     if len(cov_est) == 0:
-        print("Using direct covariance computation.")
+        # print("Using direct covariance computation.")
         covs = np.empty((n_trials, n_channels, n_channels))
         for i, window in enumerate(data):
             # Remove mean from each channel to center the data
@@ -246,7 +247,7 @@ def compute_covariances(data: np.ndarray, cov_est: str = "") -> np.ndarray:
             cov = t_cov / np.trace(t_cov)  # Normalize by trace
             covs[i] = cov
     else:
-        print(f"Using covariance estimator: {cov_est}")
+        # print(f"Using covariance estimator: {cov_est}")
         cov_estimator = Covariances(estimator=cov_est)
         covs = cov_estimator.fit_transform(data)
 
