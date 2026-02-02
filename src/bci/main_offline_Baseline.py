@@ -48,7 +48,7 @@ import pandas as pd
 from sklearn.model_selection import GroupKFold
 
 # Evaluation
-from bci.evaluation.metrics import MetricsTable, compile_metrics
+from bci.Evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
 from bci.loading.loading import (
@@ -58,9 +58,12 @@ from bci.loading.loading import (
 )
 
 # Preprocessing
-from bci.preprocessing.artefact_removal import ArtefactRemoval
-from bci.preprocessing.filters import Filter
-from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
+from bci.Preprocessing.artefact_removal import ArtefactRemoval
+from bci.Preprocessing.filters import Filter
+from bci.Preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
+
+# Models - HybridLDA wrapper for testing different features
+from bci.models.AdaptiveLDA_modules.hybrid_lda_wrapper import HybridLDAWrapper
 
 # Utils
 from bci.utils.bci_config import load_config
@@ -143,6 +146,31 @@ MODEL_CONFIGURATIONS: List[Dict[str, Any]] = [
         "features": ["csp", "welch_bandpower"],
         "classifier": "rf",
         "scale": True,
+    },
+    # HybridLDA with different feature types
+    {
+        "name": "HybridLDA + Log-Bandpower",
+        "features": "log_bandpower",
+        "classifier": "hybrid_lda",
+        "scale": False,
+    },
+    {
+        "name": "HybridLDA + CSP",
+        "features": "csp",
+        "classifier": "hybrid_lda",
+        "scale": False,
+    },
+    {
+        "name": "HybridLDA + Welch-Bandpower",
+        "features": "welch_bandpower",
+        "classifier": "hybrid_lda",
+        "scale": False,
+    },
+    {
+        "name": "HybridLDA + CSP+BP",
+        "features": ["csp", "welch_bandpower"],
+        "classifier": "hybrid_lda",
+        "scale": False,
     },
 ]
 
@@ -228,23 +256,39 @@ def run_cv_for_config(
             print("Skipped (no data after AR)")
             continue
 
-        # Create and train the model
-        clf = choose_model(
-            "baseline",
-            {
-                "features": model_config["features"],
-                "classifier": model_config["classifier"],
-                "scale": model_config["scale"],
-                "random_state": config.random_state,
-            },
-        )
-
         try:
-            clf.fit(X_train_clean, y_train_clean)
-
-            # Evaluate on validation fold
-            fold_predictions = clf.predict(X_val_clean)
-            fold_probabilities = clf.predict_proba(X_val_clean)
+            # Handle HybridLDA differently (uses wrapper with feature extraction)
+            if model_config["classifier"] == "hybrid_lda":
+                clf = HybridLDAWrapper(
+                    features=model_config["features"],
+                    move_threshold=0.5,
+                    reg=1e-2,
+                    shrinkage_alpha=0.1,
+                    uc_mu=0.4 * 2**-6,
+                    sfreq=config.fs  # Pass sampling frequency
+                )
+                clf.fit(X_train_clean, y_train_clean)
+                
+                # Evaluate on validation fold
+                fold_predictions = clf.predict(X_val_clean)
+                fold_probabilities = clf.predict_proba(X_val_clean)
+            else:
+                # Baseline models path (existing code)
+                clf = choose_model(
+                    "baseline",
+                    {
+                        "features": model_config["features"],
+                        "classifier": model_config["classifier"],
+                        "scale": model_config["scale"],
+                        "random_state": config.random_state,
+                    },
+                )
+                
+                clf.fit(X_train_clean, y_train_clean)
+                
+                # Evaluate on validation fold
+                fold_predictions = clf.predict(X_val_clean)
+                fold_probabilities = clf.predict_proba(X_val_clean)
 
             # Compute metrics
             fold_metrics = compile_metrics(
@@ -302,7 +346,23 @@ def run_baseline_comparison_pipeline():
     # =========================================================================
     # 1. Load Configuration
     # =========================================================================
-    current_wd = Path.cwd()  # BCI-Challenge directory
+    # Detect project root: handle both workspace root and BCI-Challenge subdirectory
+    # Script is at: [workspace]/BCI-Challenge/src/bci/main_offline_Baseline.py
+    script_dir = Path(__file__).parent.parent.parent  # Goes up 3 levels from script
+    
+    # Check if we're in a BCI-Challenge subdirectory (workspace structure)
+    # The script is at: BCI-Challenge/src/bci/main_offline_Baseline.py
+    # So script_dir should be BCI-Challenge directory
+    # Check if script_dir contains "src" and "data" directories to confirm it's the project root
+    if (script_dir / "src").exists() and (script_dir / "data").exists():
+        # This is the BCI-Challenge project root
+        current_wd = script_dir
+    elif (script_dir / "BCI-Challenge" / "src").exists() and (script_dir / "BCI-Challenge" / "data").exists():
+        # We're in workspace root, need to go into BCI-Challenge
+        current_wd = script_dir / "BCI-Challenge"
+    else:
+        # Fallback: assume script_dir is correct
+        current_wd = script_dir
 
     try:
         config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
@@ -530,40 +590,61 @@ def run_baseline_comparison_pipeline():
             step_size=config.step_size,
         )
 
-        # Artifact removal (same as in CV)
-        ar = ArtefactRemoval()
-        ar.get_rejection_thresholds(X_train_windows, config)
-        X_train_clean, y_train_clean = ar.reject_bad_epochs(
-            X_train_windows, y_train_windows
-        )
+        # Save the best model
+        model_dir = current_wd / "resources" / "models"
+        model_dir.mkdir(parents=True, exist_ok=True)
 
-        if len(X_train_clean) == 0:
-            print("Warning: No data left after artifact rejection. Skipping final model save.")
+        if best_config["classifier"] == "hybrid_lda":
+            # Use HybridLDAWrapper with feature extraction
+            # Note: use_improved_composition defaults to True in HybridLDAWrapper
+            final_clf = HybridLDAWrapper(
+                features=best_config["features"],
+                move_threshold=0.5,
+                reg=1e-2,
+                shrinkage_alpha=0.1,
+                uc_mu=0.4 * 2**-6,
+                sfreq=config.fs
+            )
+            final_clf.fit(X_train_windows, y_train_windows)
+            
+            # Save HybridLDA model
+            model_path = model_dir / "hybrid_lda_best.pkl"
+            final_clf.save(str(model_path))
+            print(f"Best HybridLDA model saved to: {model_path}")
         else:
-            final_clf = choose_model(
-                "baseline",
-                {
-                    "features": best_config["features"],
-                    "classifier": best_config["classifier"],
-                    "scale": best_config["scale"],
-                    "random_state": config.random_state,
-                },
+            # Baseline models path (existing code)
+            # Artifact removal (same as in CV)
+            ar = ArtefactRemoval()
+            ar.get_rejection_thresholds(X_train_windows, config)
+            X_train_clean, y_train_clean = ar.reject_bad_epochs(
+                X_train_windows, y_train_windows
             )
 
-            final_clf.fit(X_train_clean, y_train_clean)
+            if len(X_train_clean) == 0:
+                print("Warning: No data left after artifact rejection. Skipping final model save.")
+            else:
+                final_clf = choose_model(
+                    "baseline",
+                    {
+                        "features": best_config["features"],
+                        "classifier": best_config["classifier"],
+                        "scale": best_config["scale"],
+                        "random_state": config.random_state,
+                    },
+                )
 
-            # Save the best model and ArtefactRemoval
-            model_dir = current_wd / "resources" / "models"
-            model_dir.mkdir(parents=True, exist_ok=True)
-            model_path = model_dir / "baseline_best_model.pkl"
-            artefact_path = model_dir / "artefact_removal.pkl"
+                final_clf.fit(X_train_clean, y_train_clean)
 
-            final_clf.save(str(model_path))
-            with open(artefact_path, "wb") as f:
-                pickle.dump(ar, f)
+                # Save the best model and ArtefactRemoval
+                model_path = model_dir / "baseline_best_model.pkl"
+                artefact_path = model_dir / "artefact_removal.pkl"
 
-            print(f"Best model saved to: {model_path}")
-            print(f"ArtefactRemoval saved to: {artefact_path}")
+                final_clf.save(str(model_path))
+                with open(artefact_path, "wb") as f:
+                    pickle.dump(ar, f)
+
+                print(f"Best model saved to: {model_path}")
+                print(f"ArtefactRemoval saved to: {artefact_path}")
 
     return all_results, df_results
 

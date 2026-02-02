@@ -214,8 +214,117 @@ class ArtefactRemoval:
         if self.amplitude_threshold is not None:
             self.rejection_threshold = self.amplitude_threshold
 
+    def reject_bad_epochs_riemann(
+        self,
+        epochs_data: np.ndarray,
+        epochs_labels: np.ndarray,
+        group_labels: np.ndarray = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Reject bad epochs using multiple criteria.
+
+        An epoch is rejected if it fails ANY of the enabled criteria.
+        """
+        if self.amplitude_threshold is None and not any(
+            [
+                self.use_amplitude,
+                self.use_variance,
+                self.use_gradient,
+                self.use_consistency,
+            ]
+        ):
+            raise ValueError("Rejection thresholds have not been computed yet.")
+
+        if epochs_data.shape[0] != epochs_labels.shape[0]:
+            raise ValueError("Number of epochs and labels must match.")
+
+        n_epochs, n_channels, n_times = epochs_data.shape
+        good_epochs = []
+        good_labels = []
+        good_groups = []
+        rejection_reasons = {
+            "amplitude": 0,
+            "variance": 0,
+            "gradient": 0,
+            "consistency": 0,
+            "too_many_bad_channels": 0,
+        }
+
+        for i in range(n_epochs):
+            epoch = epochs_data[i]  # (n_channels, n_times)
+            is_bad = False
+            bad_channels = np.zeros(n_channels, dtype=bool)
+
+            # Check each criterion
+            if self.use_amplitude and self.amplitude_threshold is not None:
+                channel_max_amps = np.max(np.abs(epoch), axis=1)  # (n_channels,)
+                bad_amp = channel_max_amps > self.amplitude_threshold
+                bad_channels = bad_channels | bad_amp
+                if np.sum(bad_amp) > (n_channels * self.max_bad_channels_pct):
+                    is_bad = True
+                    rejection_reasons["amplitude"] += 1
+                    continue
+
+            if self.use_variance and self.variance_threshold is not None:
+                channel_vars = np.var(epoch, axis=1)  # (n_channels,)
+                bad_var = channel_vars > self.variance_threshold
+                bad_channels = bad_channels | bad_var
+                if np.sum(bad_var) > (n_channels * self.max_bad_channels_pct):
+                    is_bad = True
+                    rejection_reasons["variance"] += 1
+                    continue
+
+            if self.use_gradient and self.gradient_threshold is not None:
+                grad = np.diff(epoch, axis=1)  # (n_channels, n_times-1)
+                max_grads = np.max(np.abs(grad), axis=1)  # (n_channels,)
+                bad_grad = max_grads > self.gradient_threshold
+                bad_channels = bad_channels | bad_grad
+                if np.sum(bad_grad) > (n_channels * self.max_bad_channels_pct):
+                    is_bad = True
+                    rejection_reasons["gradient"] += 1
+                    continue
+
+            if self.use_consistency and self.consistency_threshold is not None:
+                channel_vars = np.var(epoch, axis=1)
+                if len(channel_vars) > 2:  # Need at least 3 channels for z-score
+                    z_scores = np.abs(stats.zscore(channel_vars))
+                    if np.max(z_scores) > self.consistency_threshold:
+                        is_bad = True
+                        rejection_reasons["consistency"] += 1
+                        continue
+
+            # Final check: too many bad channels overall?
+            if np.sum(bad_channels) > (n_channels * self.max_bad_channels_pct):
+                is_bad = True
+                rejection_reasons["too_many_bad_channels"] += 1
+                continue
+
+            # Epoch passed all checks
+            if not is_bad:
+                good_epochs.append(epoch)
+                good_labels.append(epochs_labels[i])
+                if group_labels is not None:
+                    good_groups.append(group_labels[i])
+
+        rejected = n_epochs - len(good_epochs)
+        rejection_pct = (rejected / n_epochs * 100) if n_epochs > 0 else 0
+
+        print(f"\n📊 Artifact Rejection Statistics:")
+        print(f"   Total epochs: {n_epochs}")
+        print(f"   Kept: {len(good_epochs)} ({100-rejection_pct:.1f}%)")
+        print(f"   Rejected: {rejected} ({rejection_pct:.1f}%)")
+        if rejected > 0:
+            print(f"\n   Rejection reasons:")
+            for reason, count in rejection_reasons.items():
+                if count > 0:
+                    print(f"     - {reason}: {count} epochs")
+
+        return np.array(good_epochs), np.array(good_labels), np.array(good_groups)
+
     def reject_bad_epochs(
-        self, epochs_data: np.ndarray, epochs_labels: np.ndarray
+        self,
+        epochs_data: np.ndarray,
+        epochs_labels: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Reject bad epochs using multiple criteria.

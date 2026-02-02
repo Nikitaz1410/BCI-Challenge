@@ -1,10 +1,4 @@
-# Pull the chunks of data from the stream
-# Buffer the data to form epochs
-# Apply preprocessing (filtering, artifact removal) on the epochs
-# Compute covariance matrices for the epochs
-# Apply Riemannian geometry-based classification on the covariance matrices
-# Output the classification results in real-time
-
+import logging
 import pickle
 import socket
 import sys
@@ -12,222 +6,375 @@ import time
 from pathlib import Path
 
 import numpy as np
+import zmq
 from pylsl import StreamInlet, resolve_streams
 
+# Local imports (ensure your python path is set correctly to find these)
 from bci.models.riemann import RiemannianClf
 from bci.preprocessing.filters import Filter
 from bci.transfer.transfer import BCIController
 from bci.utils.bci_config import load_config
 
-if __name__ == "__main__":
-    # Initialize the Objects
+# --- Configuration & Constants ---
+LOG_LEVEL = logging.INFO
+ZMQ_PORT = "5556"
+# Maps string commands to integer classes if needed
+CMD_MAP = {"CIRCLE ONSET": 0, "ARROW LEFT ONSET": 1, "ARROW RIGHT ONSET": 2}
+UNKNOWN = "UNKNOWN"
 
-    # Load the config file
-    current_wd = Path.cwd()  # BCI-Challenge directory
+# Setup Logging
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
-    try:
-        config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
-        print(f"Loading configuration from: {config_path}")
-        config = load_config(config_path)
-        print("Configuration loaded successfully!")
-    except Exception as e:
-        print(f"❌ Error loading config: {e}")
-        sys.exit(1)
 
-    # Initialize variables
-    np.random.seed(config.random_state)
+class BCIEngine:
+    def __init__(self, config_path: Path):
+        self.running = True
+        self.stats = {
+            "predictions": [0, 0, 0],
+            "accepted": {
+                "correct": [0, 0, 0],
+                "incorrect": [0, 0, 0],
+            },
+            "rejected": {
+                "correct": [0, 0, 0],
+                "incorrect": [0, 0, 0],
+            },
+            "total_time_ms": 0.0,
+        }
 
-    model_path = current_wd / "resources" / "models" / "model.pkl"
-    artefact_rejection_path = (
-        current_wd / "resources" / "models" / "artefact_removal.pkl"
-    )
+        # 1. Load Configuration
+        try:
+            logger.info(f"Loading configuration from: {config_path}")
+            self.config = load_config(config_path)
+            # Set random seed
+            if hasattr(self.config, "random_state"):
+                np.random.seed(self.config.random_state)
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+            sys.exit(1)
 
-    filter = Filter(config, online=True)
-    # ar = pickle.load(open(artefact_rejection_path, "rb"))
-    model_args = {
-        "cov_est": "lwf"
-    }  # args for the model chooser (what the model constructor needs)
-    clf = RiemannianClf(model_args)
-    clf = clf.load(model_path)
+        # 2. Initialize Models & Filters
+        self._init_models()
 
-    # Transfer Function
-    controller = BCIController(config)
+        # 3. Initialize Buffers
+        self._init_buffers()
 
-    keep_mask = np.array(
-        [
-            config.channels.index(ch)
-            for ch in config.channels
-            if ch not in config.remove_channels
-        ]
-    )
+        # 4. Initialize Networking
+        self._init_sockets()
 
-    print(f"Keep Indices: {keep_mask}")
+    def _init_models(self):
+        """Load ML models and signal filters."""
+        base_path = Path.cwd() / "resources" / "models"
+        model_path = base_path / "model.pkl"
+        artifact_path = base_path / "artefact_removal.pkl"
 
-    buffer = np.zeros(
-        (len(np.array(config.channels)[keep_mask]), int(config.window_size)),
-        dtype=np.float32,
-    )
-    label_buffer = np.zeros((1, int(config.window_size)), dtype=np.int32)
+        # Signal Filter
+        self.signal_filter = Filter(self.config, online=True)
 
-    avg_time_per_classification = 0.0
-    number_of_classifications = 0
+        # Classifier
+        self.clf = RiemannianClf(cov_est="lwf").load(model_path)
 
-    total_fails = 0
-    total_successes = 0
+        # Artifact Rejection
+        with open(artifact_path, "rb") as f:
+            self.ar = pickle.load(f)
 
-    total_predictions = 0
-    total_rejected = 0
+        # Controller (handles the robust buffer logic)
+        self.controller = BCIController(self.config)
 
-    probability_threshold = 0.6  # threshold for accepting a prediction
+    def _init_buffers(self):
+        """Pre-allocate numpy buffers."""
+        self.keep_mask = np.array(
+            [
+                self.config.channels.index(ch)
+                for ch in self.config.channels
+                if ch not in self.config.remove_channels
+            ]
+        )
+        n_channels = len(self.keep_mask)
+        window_size = int(self.config.window_size)
 
-    markers = {
-        -1: "unknown",
-        0: "rest",
-        1: "left_hand",
-        2: "right_hand",
-    }
+        logger.info(
+            f"Initialized Buffer: {n_channels} channels x {window_size} samples"
+        )
 
-    cmd_map = {"CIRCLE ONSET": 0, "ARROW LEFT ONSET": 1, "ARROW RIGHT ONSET": 2}
+        # Main Data Buffer
+        self.buffer = np.zeros((n_channels, window_size), dtype=np.float32)
 
-    # Add stream finding logic based on mode
+    def _init_sockets(self):
+        """Setup ZMQ and UDP sockets."""
+        # ZMQ Publisher (for Visualizer)
+        self.zmq_ctx = zmq.Context()
+        self.zmq_pub = self.zmq_ctx.socket(zmq.PUB)
+        self.zmq_pub.bind(f"tcp://*:{ZMQ_PORT}")
+        logger.info(f"ZMQ Publisher bound to port {ZMQ_PORT}")
 
-    print("Initializing preprocessing and model objects completed!")
+        # UDP Socket (for Game/External App)
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    # Find the EEG stream from LSL and establish connection
-    print("Looking for EEG and Markers streams...")
-    streams = resolve_streams(wait_time=5.0)
+    def _connect_streams(self):
+        """Resolve and connect to LSL streams."""
+        logger.info("Resolving LSL streams...")
+        streams = resolve_streams(wait_time=5.0)
 
-    eeg_streams = [s for s in streams if s.type() == "EEG"]
-    if config.online == "dino":
+        eeg_streams = [s for s in streams if s.type() == "EEG"]
+
+        # Determine Label Stream Name based on mode
+        target_label_stream = (
+            "MyDinoGameMarkerStream"
+            if self.config.online == "dino"
+            else "Labels_Stream"
+        )
         label_streams = [
             s
             for s in streams
-            if s.type() == "Markers" and s.name() == "MyDinoGameMarkerStream"
-        ]
-    else:
-        label_streams = [
-            s for s in streams if s.type() == "Markers" and s.name() == "Labels_Stream"
+            if s.type() == "Markers" and s.name() == target_label_stream
         ]
 
-    if not eeg_streams:
-        print("❌ Could not find EEG streams.")
-        inlet = None
-    else:
-        inlet = StreamInlet(eeg_streams[0], max_chunklen=32)
+        if not eeg_streams:
+            raise RuntimeError("No EEG Stream found.")
 
-    if not label_streams:
-        print("❌ Could not find Markers streams.")
-        inlet_labels = None
-    else:
-        inlet_labels = StreamInlet(label_streams[0], max_chunklen=32)
+        if label_streams:
+            self.inlet_labels = StreamInlet(label_streams[0], max_chunklen=32)
+            logger.info(f"Connected to Markers: {label_streams[0].name()}")
+        else:
+            logger.warning(
+                "No Marker Stream found. Operating without ground truth labels."
+            )
+            self.inlet_labels = None
 
-    print("Starting to read data from the EEG stream...")
-    # print(f"Reading Labels from {label_streams[0].name()}")
+        self.inlet_eeg = StreamInlet(eeg_streams[0], max_chunklen=32)
+        logger.info(f"Connected to EEG: {eeg_streams[0].name()}")
 
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        while True:
-            try:
-                start_classification_time = time.time() * 1000  # in milliseconds
-                eeg_chunk, timestamp = inlet.pull_chunk()
-                labels_chunk, label_timestamp = inlet_labels.pull_chunk()
-                crt_label = None
+    def _update_buffer(self, buffer, new_data):
+        """Efficiently shifts buffer and appends new data."""
+        n_new = new_data.shape[1]
+        if n_new == 0:
+            return buffer
 
-                # Check if sample and labels are valid and non-empty
-                if eeg_chunk:
-                    # Convert to numpy arrays and transpose to (n_channels, n_samples)
-                    eeg_chunk = np.array(eeg_chunk).T[
-                        keep_mask
-                    ]  # shape (n_channels, n_samples) -> Keep only channels of interest
-                    n_new_samples = eeg_chunk.shape[1]
+        if n_new >= buffer.shape[1]:
+            return new_data[:, -buffer.shape[1] :]
+        else:
+            buffer[:, :-n_new] = buffer[:, n_new:]
+            buffer[:, -n_new:] = new_data
+            return buffer
 
-                    # STATEFUL FILTERING
-                    filtered_chunk = filter.apply_filter_online(eeg_chunk)
+    def run(self):
+        try:
+            self._connect_streams()
+        except RuntimeError as e:
+            logger.error(e)
+            return
 
-                    # Safety: If new data is larger than the buffer, just take the end of it
-                    if n_new_samples >= config.window_size:
-                        buffer = filtered_chunk[:, -config.window_size :]
+        logger.info("Starting BCI Loop...")
 
-                    # Update the buffers with the new chunks of data
-                    # The buffer already has the filtered data inside
-                    buffer[:, :-n_new_samples] = buffer[:, n_new_samples:]
-                    buffer[:, -n_new_samples:] = filtered_chunk
+        # Initialize the current label -> Is updated based on the MarkerStream
+        crt_label = UNKNOWN
 
-                if labels_chunk:
-                    labels_chunk = np.array(labels_chunk).T  # shape (1, n_samples)
+        try:
+            while self.running:
+                start_time = time.perf_counter()
 
-                    n_new_labels = labels_chunk.shape[1]
+                # --- 1. Data Acquisition ---
+                chunk, timestamp = self.inlet_eeg.pull_chunk()
 
-                    label_chunk = np.array(
-                        [cmd_map.get(l[0], -1) for l in labels_chunk]
-                    )
+                # Consume labels to keep stream clear (logic omitted for brevity if not used for calibration)
+                if self.inlet_labels:
+                    label, timestamp = self.inlet_labels.pull_chunk()
+                    if label:
+                        crt_label = label[0][0]
+                        if crt_label in CMD_MAP.keys():
+                            logger.info(f"{crt_label}: {CMD_MAP[crt_label]}")
+                        else:
+                            crt_label = UNKNOWN
 
-                    if n_new_labels >= config.window_size:
-                        label_buffer = labels_chunk[:, -config.window_size :]
+                if not chunk:
+                    # Small sleep to prevent CPU spinning if LSL is non-blocking
+                    # time.sleep(0.001)
+                    continue
 
-                    print(f"Buffer: {label_buffer}")
-                    print(f"Chunk: {label_chunk}")
+                # --- 2. Preprocessing ---
+                # Transpose to (channels, samples) and filter
+                eeg_np = np.array(chunk).T[self.keep_mask]
+                filtered_chunk = self.signal_filter.apply_filter_online(eeg_np)
 
-                    label_buffer[:, :-n_new_labels] = label_buffer[:, n_new_labels:]
-                    label_buffer[:, -n_new_labels:] = label_chunk
+                # Update Main Buffer
+                self.buffer = self._update_buffer(self.buffer, filtered_chunk)
 
-                # Extract the current label (most present in the buffer)
-                # TODO: check this for the dino game -> Might need mapping
-                unique, counts = np.unique(label_buffer, return_counts=True)
-                if len(unique) > 0:
-                    label_counts = dict(zip(unique, counts))
-                    crt_label = min(label_counts, key=lambda k: label_counts[k])
-                    print(
-                        f"Current label: {crt_label} - {markers.get(crt_label, 'unknown')}"
-                    )
-                else:
-                    crt_label = -1  # fallback to unknown
+                # Send Data to Visualizer
+                self.zmq_pub.send_pyobj(("DATA", eeg_np, filtered_chunk))
 
-                # ARTIFACT REJECTION: Skipped for now
+                # --- 3. Artifact Rejection ---
+                if self.ar.reject_bad_epochs_online(self.buffer):
+                    # logger.debug("Artifact detected.")
+                    self.zmq_pub.send_pyobj(("EVENT", "Artifact"))
+                    continue
 
-                # CLASSIFICATION:
-                probabilities = clf.predict_proba(buffer)  # The buffer is filtered data
+                # --- 4. Classification ---
+                # Predict probabilities
+                probs, cov = self.clf.predict_proba(self.buffer)
+                prediction = np.argmax(probs)
 
-                if probabilities is None:
-                    print("Warning: Model returned None for probability.")
-                    continue  # skip this iteration
+                # Adapt the classifier if it is riemann
+                if isinstance(self.clf, RiemannianClf):
+                    self.clf.adapt(cov, prediction)
 
-                controller.send_command(probabilities, sock)
+                if probs is None:
+                    continue
 
-                prediction = np.argmax(
-                    probabilities, axis=1
-                )[
-                    0
-                ]  # To account to the fact that the classifier was trained with labels 1,2,3
-                print(
-                    f"Predicted class: {prediction} - {markers.get(prediction, 'unknown')} with probability {probabilities[0][prediction]:.4f}"
-                )
-                total_predictions += 1
+                # --- 5. Robust Buffer Logic ---
+                # Send raw probs to controller, get back the smoothed/robust probabilities
+                buffer_proba = self.controller.send_command(probs, self.udp_sock)
 
-                if probabilities[0][prediction] < probability_threshold:
-                    total_rejected += 1
+                # Send Robust Probabilities to Visualizer
+                if buffer_proba is not None:
+                    # Flatten to ensure it's a simple 1D array [p_rest, p_left, p_right]
+                    self.zmq_pub.send_pyobj(("PROBA", buffer_proba.flatten()))
 
-                total_successes += int(prediction == crt_label)
-                total_fails += int(prediction != crt_label)
+                    # --- 6. Evaluation --- #
+                    if crt_label != UNKNOWN:
+                        ground_truth = CMD_MAP[crt_label]
 
-                number_of_classifications += 1
+                        # Stats & Logging
+                        self.stats["predictions"][ground_truth] += 1
 
-                end_classification_time = time.time() * 1000  # in milliseconds
-                avg_time_per_classification += (
-                    end_classification_time - start_classification_time
-                )
-            except KeyboardInterrupt:
-                print("Stopping the online processing.")
-                print(
-                    f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications):.2f} ms"
-                )
-                print(
-                    f"Total Predictions: {total_predictions}, Rejected: {total_rejected},  Successes: {total_successes}, Fails: {total_fails}"
-                )
+                        # Check the correct classifications and the accepted classifications
+                        if np.max(buffer_proba) < self.config.classification_threshold:
+                            if ground_truth == prediction:
+                                self.stats["rejected"]["correct"][ground_truth] += 1
+                            else:
+                                self.stats["rejected"]["incorrect"][ground_truth] += 1
+                        else:
+                            if ground_truth == prediction:
+                                self.stats["accepted"]["correct"][ground_truth] += 1
+                            else:
+                                self.stats["accepted"]["incorrect"][ground_truth] += 1
 
-                # Compute average accuracy
-                if total_predictions > 0:
-                    avg_accuracy = total_successes / total_predictions
-                    print(f"Average accuracy: {avg_accuracy:.4f}")
-                else:
-                    print("No predictions made yet.")
-                break
+                # Timing
+                dt_ms = (time.perf_counter() - start_time) * 1000
+                self.stats["total_time_ms"] += dt_ms
+
+        except KeyboardInterrupt:
+            self.stop()
+
+    def _print_class_stats(self):
+        """Helper to print a formatted table of class-wise statistics."""
+        # Inverse the map to get names: {0: "CIRCLE...", 1: "LEFT..."}
+        # Simplify names for the table
+
+        # You might want to customize these short names based on your CMD_MAP
+        # Assuming 0: Rest/Circle, 1: Left, 2: Right
+        class_names = ["Rest", "Left", "Right"]
+
+        print("\n" + "=" * 85)
+        print(f"{'CLASS PERFORMANCE REPORT':^85}")
+        print("=" * 85)
+
+        # Header
+        header = (
+            f"| {'Class':<12} | {'Total':<6} | "
+            f"{'Accepted (Corr/Inc)':<20} | "
+            f"{'Rejected':<10} | "
+            f"{'Rej Rate':<10} | "
+            f"{'Accuracy':<10} |"
+        )
+        print(header)
+        print("-" * 85)
+
+        total_correct_accepted = 0
+        total_accepted = 0
+        total_predictions = 0
+
+        # Iterate through classes (assuming indices 0, 1, 2)
+        for i, name in enumerate(class_names):
+            # Fetch stats
+            n_total = self.stats["predictions"][i]
+
+            acc_corr = self.stats["accepted"]["correct"][i]
+            acc_inc = self.stats["accepted"]["incorrect"][i]
+            n_accepted = acc_corr + acc_inc
+
+            rej_corr = self.stats["rejected"]["correct"][i]
+            rej_inc = self.stats["rejected"]["incorrect"][i]
+            n_rejected = rej_corr + rej_inc
+
+            # Global Accumulators
+            total_predictions += n_total
+            total_correct_accepted += acc_corr
+            total_accepted += n_accepted
+
+            # Metrics
+            # Accuracy is based only on ACCEPTED trials (Online Accuracy)
+            if n_accepted > 0:
+                accuracy = (acc_corr / n_accepted) * 100
+            else:
+                accuracy = 0.0
+
+            if n_total > 0:
+                rej_rate = (n_rejected / n_total) * 100
+            else:
+                rej_rate = 0.0
+
+            # Row Printing
+            print(
+                f"| {name:<12} | {n_total:<6} | "
+                f"{f'{acc_corr}/{acc_inc}':<20} | "
+                f"{n_rejected:<10} | "
+                f"{rej_rate:<9.1f}% | "
+                f"{accuracy:<9.1f}% |"
+            )
+
+        print("-" * 85)
+
+        # Global Summaries
+        if total_accepted > 0:
+            global_acc = (total_correct_accepted / total_accepted) * 100
+        else:
+            global_acc = 0.0
+
+        if total_predictions > 0:
+            global_rej = (
+                (total_predictions - total_accepted) / total_predictions
+            ) * 100
+        else:
+            global_rej = 0.0
+
+        # Footer Stats
+        print(
+            f"| {'OVERALL':<12} | {total_predictions:<6} | "
+            f"{'':<20} | "
+            f"{total_predictions - total_accepted:<10} | "
+            f"{global_rej:<9.1f}% | "
+            f"{global_acc:<9.1f}% |"
+        )
+        print("=" * 85 + "\n")
+
+    def stop(self):
+        """Graceful shutdown."""
+        self.running = False
+        logger.info("Stopping BCI Engine.")
+
+        # Calculate Timing
+        n_preds = max(1, sum(self.stats["predictions"]))
+        avg_time = self.stats["total_time_ms"] / n_preds
+
+        # Print the detailed table
+        self._print_class_stats()
+
+        print(f"Avg Processing Time per Epoch: {avg_time:.2f} ms")
+        print("=" * 30 + "\n")
+
+        self.udp_sock.close()
+        self.zmq_ctx.destroy()
+
+
+if __name__ == "__main__":
+    current_wd = Path.cwd()
+    conf_path = current_wd / "resources" / "configs" / "bci_config.yaml"
+
+    engine = BCIEngine(conf_path)
+    engine.run()

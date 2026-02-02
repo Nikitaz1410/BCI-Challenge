@@ -39,8 +39,8 @@ except ImportError:
 from bci.Preprocessing.filters import Filter
 from bci.transfer.transfer import BCIController
 from bci.utils.bci_config import load_config
-from bci.Models.AdaptiveLDA_modules.hybrid_lda import HybridLDA
-from bci.Models.AdaptiveLDA_modules.feature_extraction import extract_log_bandpower_features
+from bci.models.AdaptiveLDA_modules.hybrid_lda import HybridLDA
+from bci.models.AdaptiveLDA_modules.feature_extraction import extract_log_bandpower_features
 
 # Marker definitions (HybridLDA uses 0=rest, 1=left, 2=right)
 markers = {
@@ -134,7 +134,7 @@ if __name__ == "__main__":
     else:
         channel_indices_to_keep = list(range(len(config.channels)))
         n_channels_after_removal = len(config.channels)
-    
+
     # Buffers for storing incoming data
     # Buffer size matches number of channels after removal
     buffer = np.zeros((n_channels_after_removal, int(config.window_size)), dtype=np.float32)
