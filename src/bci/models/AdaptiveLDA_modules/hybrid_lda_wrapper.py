@@ -10,7 +10,7 @@ This wrapper allows HybridLDA to work like AllRounderBCIModel:
 import numpy as np
 from typing import Union, Sequence, Dict, Any, Optional
 from .hybrid_lda import HybridLDA
-from bci.Models.Baseline import (
+from bci.models.Baseline import (
     CSPFeatureExtractor,
     WelchBandPowerExtractor,
     ConcatFeatureUnion,

@@ -29,6 +29,7 @@ Usage:
     python main_offline_Baseline.py
 """
 
+import os
 import random
 import re
 import sys
@@ -455,8 +456,12 @@ def run_baseline_comparison_pipeline():
     all_results = []
     n_classes = len(target_event_id)
 
-    for config_idx, model_config in enumerate(MODEL_CONFIGURATIONS):
-        print(f"\n[{config_idx + 1}/{len(MODEL_CONFIGURATIONS)}] ", end="")
+    # Allow limiting configs for quick testing (e.g. MAX_CONFIGS=1)
+    max_configs = int(os.environ.get("MAX_CONFIGS", "0")) or len(MODEL_CONFIGURATIONS)
+    configs_to_run = MODEL_CONFIGURATIONS[:max_configs]
+
+    for config_idx, model_config in enumerate(configs_to_run):
+        print(f"\n[{config_idx + 1}/{len(configs_to_run)}] ", end="")
 
         result = run_cv_for_config(
             model_config=model_config,

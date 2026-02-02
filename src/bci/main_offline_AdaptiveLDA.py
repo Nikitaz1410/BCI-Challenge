@@ -44,8 +44,8 @@ from bci.Preprocessing.windows import epochs_to_windows, epochs_windows_from_fol
 from bci.Preprocessing.artefact_removal import ArtefactRemoval
 
 # Models - HybridLDA for 2-stage classification
-from bci.Models.AdaptiveLDA_modules.hybrid_lda import HybridLDA
-from bci.Models.AdaptiveLDA_modules.feature_extraction import extract_log_bandpower_features
+from bci.models.AdaptiveLDA_modules.hybrid_lda import HybridLDA
+from bci.models.AdaptiveLDA_modules.feature_extraction import extract_log_bandpower_features
 
 # Utils
 from bci.utils.bci_config import load_config

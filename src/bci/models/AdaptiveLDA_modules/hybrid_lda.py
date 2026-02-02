@@ -556,7 +556,7 @@ def test_hybrid_lda_online_adaptation():
     that update() changes means and predicted probabilities.
 
     Run with:
-        python -c "from bci.Models.AdaptiveLDA_modules.hybrid_lda import test_hybrid_lda_online_adaptation; test_hybrid_lda_online_adaptation()"
+        python -c "from bci.models.AdaptiveLDA_modules.hybrid_lda import test_hybrid_lda_online_adaptation; test_hybrid_lda_online_adaptation()"
     """
     print("\n" + "=" * 60)
     print("INTEGRATION TEST: HybridLDA Online Adaptation")

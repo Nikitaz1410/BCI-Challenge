@@ -654,6 +654,7 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
             print(f"Resampling to {resample} Hz...")
         loaded_raws = []
         loaded_events = []
+        loaded_filenames = []
         for fif_p in existing_fif:
             raw = mne.io.read_raw_fif(fif_p, preload=True)
             if resample is not None:
@@ -667,12 +668,28 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
             evs = np.load(npy_p)
             loaded_raws.append(raw)
             loaded_events.append(evs)
+            loaded_filenames.append(fif_p.stem)
 
         with open(event_id_path, "r") as f:
             event_id = json.load(f)
 
         with open(target_path / "metadata.json", "r") as f:
-            loaded_meta = json.load(f)
+            meta_from_json = json.load(f)
+
+        # CRITICAL: Use filenames from actual .fif files we loaded (same order as
+        # loaded_raws/loaded_events). metadata.json may have a different order,
+        # causing wrong (raw, filename) pairs and missing sessions in CV output.
+        meta_filenames = meta_from_json.get("filenames", [])
+        meta_channel_names = meta_from_json.get("channel_names", [])
+        fn_to_ch = dict(zip(meta_filenames, meta_channel_names))
+        loaded_channel_names = [
+            fn_to_ch.get(fn, meta_channel_names[0] if meta_channel_names else [])
+            for fn in loaded_filenames
+        ]
+        loaded_meta = {
+            "filenames": loaded_filenames,
+            "channel_names": loaded_channel_names,
+        }
 
         return (
             loaded_raws,

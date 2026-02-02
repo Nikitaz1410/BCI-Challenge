@@ -37,7 +37,7 @@ frequencies:  # Frequency range for feature extraction
 
 ### In your code:
 ```python
-from bci.Models.AdaptiveLDA import AdaptiveLDA
+from bci.models.AdaptiveLDA import AdaptiveLDA
 
 # With config parameters (automatically reads from bci_config.yaml)
 model_args = {
