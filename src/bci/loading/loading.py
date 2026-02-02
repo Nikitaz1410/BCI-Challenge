@@ -175,13 +175,7 @@ def _get_raw_xdf_offline(
         print(f"Channels in recording, total {len(eeg_channels)}:", eeg_channels)
         channel_labels = eeg_channels
 
-        # Check if channels match expected labels
-        if eeg_channels != standard_channels:
-            # Channel info exists but doesn't match - filter out this recording
-            print("Channels do not match standard 10-20 montage.")
-            channel_labels = eeg_channels
-
-        if "P999" in trial.name and "S001" in trial.name:
+        if "sub-P999_ses-S001_task-comp_final_run-001_eeg" in trial.name:
             print(
                 "Switched channels Cz and Fp2 detected. Assigning custom 16 channel labels + keyboard..."
             )
@@ -206,6 +200,13 @@ def _get_raw_xdf_offline(
             ]
             channel_labels = custom_channels_p999
 
+        # Check if channels match expected labels
+        if eeg_channels != standard_channels:
+            # Channel info exists but doesn't match - filter out this recording
+            print("Channels do not match standard 10-20 montage.")
+            channel_labels = eeg_channels
+
+
         if len(eeg_channels) == 24:
             print(
                 "Recording with 24 channels detected. Different markers, so discarding the recording..."
@@ -225,31 +226,6 @@ def _get_raw_xdf_offline(
                 "Number of channels is 16. Assigning 16 first channel labels from standard_1020 montage..."
             )
             channel_labels = standard_channels
-
-        if "P999" in trial.name and any(code in trial.name for code in target_codes):
-            print(
-                "Switched channels Cz and Fp2 detected. Assigning custom 16 channel labels + keyboard..."
-            )
-            custom_channels_p999 = [
-                "Fp1",
-                "Cz",
-                "F3",
-                "Fz",
-                "F4",
-                "T7",
-                "C3",
-                "Fp2",
-                "C4",
-                "T8",
-                "P3",
-                "Pz",
-                "P4",
-                "PO7",
-                "PO8",
-                "Oz",
-                "Keyboard",
-            ]
-            channel_labels = custom_channels_p999  # Switched Fp2 and Cz for P999 with 16 channels + keyboard
 
         if "P124" in trial.name:
             print(
@@ -327,7 +303,7 @@ def _get_raw_xdf_offline(
     raw_data = mne.io.RawArray(data, info, verbose=False)
     raw_data.set_montage(montage)
 
-    if "P554" in trial.name or ("P999" in trial.name and "S001" in trial.name):
+    if "P554" in trial.name or ("sub-P999_ses-S001_task-comp_final_run-001_eeg" in trial.name):
         print("Reordering channels for standard 10-20 montage...")
         raw_data.reorder_channels(standard_channels)
         channel_labels = raw_data.ch_names
