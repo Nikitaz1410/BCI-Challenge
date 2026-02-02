@@ -179,6 +179,8 @@ def _get_raw_xdf_offline(
         if eeg_channels != standard_channels:
             # Channel info exists but doesn't match - filter out this recording
             print("Channels do not match standard 10-20 montage.")
+            # print("Discarding this recording for further processing...")
+            # return None, None, None
             channel_labels = eeg_channels
 
         if len(eeg_channels) == 24:
@@ -284,6 +286,8 @@ def _get_raw_xdf_offline(
         data = data[:-1, :]
         channel_labels = channel_labels[:-1]
 
+    # print(len(data), data.shape)
+
     # Verify we have the correct number of channels
     if data.shape[0] != len(channel_labels):
         print(
@@ -291,6 +295,8 @@ def _get_raw_xdf_offline(
         )
         print("Discarding this recording from further processing...")
         return None, None, None
+
+    # print(f"Final channel labels used ({len(channel_labels)} channels):", channel_labels)
 
     # Get sampling frequency and create info object
     sfreq = float(streams[eeg_channel]["info"]["nominal_srate"][0])
@@ -522,6 +528,7 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
             json.dump(event_id, f, indent=2)
 
         print("Processing and saving Physionet data to disk...")
+        # print("Keeping all 64 channels for now...")
 
         subject_rows = []
 
@@ -549,6 +556,7 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
             events_sub, _ = mne.events_from_annotations(raw_sub, event_id=event_id)
             np.save(events_path, events_sub)
             raw_sub.save(raw_path, overwrite=True)
+            # np.save(events_path, mne.find_events(raw_sub))
 
             # Record metadata to CSV
             subject_rows.append(
@@ -660,15 +668,16 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
                 if sfreq != resample:
                     original_sfreq = sfreq
                     raw.resample(resample)
-
             # Find corresponding event file
             npy_p = event_save_dir / f"{fif_p.stem.replace('_raw', '')}_events.npy"
             evs = np.load(npy_p)
+            # print(evs)
             loaded_raws.append(raw)
             loaded_events.append(evs)
 
         with open(event_id_path, "r") as f:
             event_id = json.load(f)
+            # print(event_id)
 
         with open(target_path / "metadata.json", "r") as f:
             loaded_meta = json.load(f)
@@ -683,18 +692,13 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
 
     # --- STEP 2: IF TARGET EMPTY, CHECK SOURCE ---
     if target_path is None:
-        if source_path is None:
-            raise ValueError(
-                "Target folder is empty and no source_folder was provided to process raw XDF files."
-            )
-        else:
-            print(
-                f"Target folder is empty. Processing XDF files from source folder: {source_path}"
-            )
-        # process from source_path
+        raise ValueError(
+            "Target folder is empty and no source_folder was provided to process raw XDF files."
+        )
     else:
-        pass
-
+        print(
+            f"Target folder is empty. Processing XDF files from source folder: {source_path}"
+        )
 
     all_xdf = sorted([p for p in source_path.glob("*.xdf")])
     print(f"Found {len(all_xdf)} XDF files in source folder.")
@@ -720,18 +724,16 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
         if raw is None:
             print("raw is None, skipping the file.")
             continue
-       
-
-        montage = raw.info["chs"]
-        
-        selected_events = _standardize_and_map(raw, target_event_id)
+        task_mode = "dino" if "dino" in file_path.name.lower() else "general"
+        # Standardize and map using the specific mode
+        selected_events = _standardize_and_map(raw, target_event_id, mode=task_mode)
 
         # NOTE: consider using JUMP and JUMP FAIL as evaluation of how user performs?
 
         selected_event_id.update(target_event_id)
 
         # Save files
-        base_name = file_path.stem 
+        base_name = file_path.stem  # filename without extension
         raw.info["subject_info"] = {"id": 110}
         raw.save(raw_save_dir / f"{base_name}_raw.fif", overwrite=True)
         np.save(event_save_dir / f"{base_name}_events.npy", selected_events)
@@ -749,7 +751,6 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
         "filenames": raw_filenames,
         "channel_names": channel_names
     }
-
     with open(target_path / "metadata.json", "w") as f:
         json.dump(loaded_meta, f, indent=2)
 
@@ -768,6 +769,11 @@ def load_fina_baseline():
 
 def load_physionet_baseline():
     pass
+
+
+# NOTE: The following is an example of how to use the loaded data for you guys as a reference
+# on how the data could be processed further.
+# TODO: Needs to be removed from the final version.
 
 
 def create_subject_train_set(
