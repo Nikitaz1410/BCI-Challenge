@@ -20,6 +20,7 @@ LOG_LEVEL = logging.INFO
 ZMQ_PORT = "5556"
 # Maps string commands to integer classes if needed
 CMD_MAP = {"CIRCLE ONSET": 0, "ARROW LEFT ONSET": 1, "ARROW RIGHT ONSET": 2}
+UNKNOWN = "UNKNOWN"
 
 # Setup Logging
 logging.basicConfig(
@@ -34,10 +35,15 @@ class BCIEngine:
     def __init__(self, config_path: Path):
         self.running = True
         self.stats = {
-            "predictions": 0,
-            "rejected": 0,
-            "successes": 0,
-            "fails": 0,
+            "predictions": [0, 0, 0],
+            "accepted": {
+                "correct": [0, 0, 0],
+                "incorrect": [0, 0, 0],
+            },
+            "rejected": {
+                "correct": [0, 0, 0],
+                "incorrect": [0, 0, 0],
+            },
             "total_time_ms": 0.0,
         }
 
@@ -167,6 +173,9 @@ class BCIEngine:
 
         logger.info("Starting BCI Loop...")
 
+        # Initialize the current label -> Is updated based on the MarkerStream
+        crt_label = UNKNOWN
+
         try:
             while self.running:
                 start_time = time.perf_counter()
@@ -176,7 +185,13 @@ class BCIEngine:
 
                 # Consume labels to keep stream clear (logic omitted for brevity if not used for calibration)
                 if self.inlet_labels:
-                    _ = self.inlet_labels.pull_chunk()
+                    label, timestamp = self.inlet_labels.pull_chunk()
+                    if label:
+                        crt_label = label[0][0]
+                        if crt_label in CMD_MAP.keys():
+                            logger.info(f"{crt_label}: {CMD_MAP[crt_label]}")
+                        else:
+                            crt_label = UNKNOWN
 
                 if not chunk:
                     # Small sleep to prevent CPU spinning if LSL is non-blocking
@@ -195,7 +210,7 @@ class BCIEngine:
                 self.zmq_pub.send_pyobj(("DATA", eeg_np, filtered_chunk))
 
                 # --- 3. Artifact Rejection ---
-                if self.ar.is_artifact(self.buffer):
+                if self.ar.reject_bad_epochs_online(self.buffer):
                     # logger.debug("Artifact detected.")
                     self.zmq_pub.send_pyobj(("EVENT", "Artifact"))
                     continue
@@ -220,8 +235,25 @@ class BCIEngine:
                     # Flatten to ensure it's a simple 1D array [p_rest, p_left, p_right]
                     self.zmq_pub.send_pyobj(("PROBA", buffer_proba.flatten()))
 
-                # Stats & Logging
-                self.stats["predictions"] += 1
+                    # --- 6. Evaluation --- #
+                    if crt_label != UNKNOWN:
+                        prediction = np.argmax(buffer_proba)
+                        ground_truth = CMD_MAP[crt_label]
+
+                        # Stats & Logging
+                        self.stats["predictions"][ground_truth] += 1
+
+                        # Check the correct classifications and the accepted classifications
+                        if np.max(buffer_proba) < self.config.classification_threshold:
+                            if ground_truth == prediction:
+                                self.stats["rejected"]["correct"][ground_truth] += 1
+                            else:
+                                self.stats["rejected"]["incorrect"][ground_truth] += 1
+                        else:
+                            if ground_truth == prediction:
+                                self.stats["accepted"]["correct"][ground_truth] += 1
+                            else:
+                                self.stats["accepted"]["incorrect"][ground_truth] += 1
 
                 # Timing
                 dt_ms = (time.perf_counter() - start_time) * 1000
@@ -230,18 +262,111 @@ class BCIEngine:
         except KeyboardInterrupt:
             self.stop()
 
+    def _print_class_stats(self):
+        """Helper to print a formatted table of class-wise statistics."""
+        # Inverse the map to get names: {0: "CIRCLE...", 1: "LEFT..."}
+        # Simplify names for the table
+
+        # You might want to customize these short names based on your CMD_MAP
+        # Assuming 0: Rest/Circle, 1: Left, 2: Right
+        class_names = ["Rest", "Left", "Right"]
+
+        print("\n" + "=" * 85)
+        print(f"{'CLASS PERFORMANCE REPORT':^85}")
+        print("=" * 85)
+
+        # Header
+        header = (
+            f"| {'Class':<12} | {'Total':<6} | "
+            f"{'Accepted (Corr/Inc)':<20} | "
+            f"{'Rejected':<10} | "
+            f"{'Rej Rate':<10} | "
+            f"{'Accuracy':<10} |"
+        )
+        print(header)
+        print("-" * 85)
+
+        total_correct_accepted = 0
+        total_accepted = 0
+        total_predictions = 0
+
+        # Iterate through classes (assuming indices 0, 1, 2)
+        for i, name in enumerate(class_names):
+            # Fetch stats
+            n_total = self.stats["predictions"][i]
+
+            acc_corr = self.stats["accepted"]["correct"][i]
+            acc_inc = self.stats["accepted"]["incorrect"][i]
+            n_accepted = acc_corr + acc_inc
+
+            rej_corr = self.stats["rejected"]["correct"][i]
+            rej_inc = self.stats["rejected"]["incorrect"][i]
+            n_rejected = rej_corr + rej_inc
+
+            # Global Accumulators
+            total_predictions += n_total
+            total_correct_accepted += acc_corr
+            total_accepted += n_accepted
+
+            # Metrics
+            # Accuracy is based only on ACCEPTED trials (Online Accuracy)
+            if n_accepted > 0:
+                accuracy = (acc_corr / n_accepted) * 100
+            else:
+                accuracy = 0.0
+
+            if n_total > 0:
+                rej_rate = (n_rejected / n_total) * 100
+            else:
+                rej_rate = 0.0
+
+            # Row Printing
+            print(
+                f"| {name:<12} | {n_total:<6} | "
+                f"{f'{acc_corr}/{acc_inc}':<20} | "
+                f"{n_rejected:<10} | "
+                f"{rej_rate:<9.1f}% | "
+                f"{accuracy:<9.1f}% |"
+            )
+
+        print("-" * 85)
+
+        # Global Summaries
+        if total_accepted > 0:
+            global_acc = (total_correct_accepted / total_accepted) * 100
+        else:
+            global_acc = 0.0
+
+        if total_predictions > 0:
+            global_rej = (
+                (total_predictions - total_accepted) / total_predictions
+            ) * 100
+        else:
+            global_rej = 0.0
+
+        # Footer Stats
+        print(
+            f"| {'OVERALL':<12} | {total_predictions:<6} | "
+            f"{'':<20} | "
+            f"{total_predictions - total_accepted:<10} | "
+            f"{global_rej:<9.1f}% | "
+            f"{global_acc:<9.1f}% |"
+        )
+        print("=" * 85 + "\n")
+
     def stop(self):
         """Graceful shutdown."""
         self.running = False
         logger.info("Stopping BCI Engine.")
 
-        n_preds = max(1, self.stats["predictions"])
+        # Calculate Timing
+        n_preds = max(1, sum(self.stats["predictions"]))
         avg_time = self.stats["total_time_ms"] / n_preds
 
-        print("\n" + "=" * 30)
-        print(f"SESSION SUMMARY")
-        print(f"Total Predictions: {self.stats['predictions']}")
-        print(f"Avg Processing Time: {avg_time:.2f} ms")
+        # Print the detailed table
+        self._print_class_stats()
+
+        print(f"Avg Processing Time per Epoch: {avg_time:.2f} ms")
         print("=" * 30 + "\n")
 
         self.udp_sock.close()

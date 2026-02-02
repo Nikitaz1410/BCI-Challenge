@@ -24,6 +24,7 @@ from bci.loading.loading import (
     create_subject_train_set,
     load_physionet_data,
     load_target_subject_data,
+    validate_train_test_split,
 )
 from bci.preprocessing.artefact_removal import ArtefactRemoval
 
@@ -116,10 +117,11 @@ if __name__ == "__main__":
 
     print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
 
+
     """ Target subject data after loading:
-    Total number of P554 files available: 2
-    Total number of P999-general files available: 4
-    Total number of P999-dino files available: 13
+    Total number of GENERAL files available: 6
+    Total number of DINO files available: 19
+    Total number of SUPRESSION files available: 1
     """
 
     # Create training set from target subject data: Choose how many files of each type to include
@@ -129,9 +131,9 @@ if __name__ == "__main__":
             all_target_raws,
             all_target_events,
             target_metadata["filenames"],
-            num_p554=0,
-            num_p999_general=0,
-            num_p999_dino=13,
+            num_general=0,
+            num_dino=13,
+            num_supression=0,
             shuffle=True,
         )
     )
@@ -157,12 +159,14 @@ if __name__ == "__main__":
         all_target_events,
         target_metadata["filenames"],
         exclude_indices=train_indices,
-        num_p554=0,
-        num_p999_general=4,
-        num_p999_dino=0,
+        num_general=4,
+        num_dino=0,
+        num_supression=0,
         shuffle=False,
     )
     print(f"Loaded {len(x_raw_test)} target subject sessions for testing.")
+
+    # validate_train_test_split(train_filenames, test_filenames)
 
     # Training: Filter the data and create epochs with metadata for grouped CV
     # NOTE: If you use Physionet + target subject -> subject-wise CV

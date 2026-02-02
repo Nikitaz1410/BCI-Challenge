@@ -384,16 +384,39 @@ class EEGVisualizer(QtWidgets.QMainWindow):
         self.plot.addItem(line)
         self.markers.append({"line": line, "pos": self.ptr})
 
+    # def _redraw(self):
+    #     self.vline.setPos(self.ptr)
+    #     data = (
+    #         self.buffer_filt if self.cb_show_filtered.isChecked() else self.buffer_raw
+    #     )
+
+    #     for i in range(self.n_channels):
+    #         if self.curves[i].isVisible():
+    #             # Apply Scale and Offset
+    #             trace = (data[i] * self.current_scale) + (i * DEFAULT_Y_OFFSET)
+    #             self.curves[i].setData(trace)
     def _redraw(self):
         self.vline.setPos(self.ptr)
+
+        # Select buffer based on checkbox
         data = (
             self.buffer_filt if self.cb_show_filtered.isChecked() else self.buffer_raw
         )
 
         for i in range(self.n_channels):
             if self.curves[i].isVisible():
-                # Apply Scale and Offset
-                trace = (data[i] * self.current_scale) + (i * DEFAULT_Y_OFFSET)
+                channel_data = data[i]
+
+                # --- STEP 1: DC OFFSET REMOVAL ---
+                # Calculate the average voltage of the currently visible window
+                # and subtract it. This centers the signal at 0.
+                center_bias = np.mean(channel_data)
+                centered_signal = channel_data - center_bias
+
+                # --- STEP 2: SCALING & POSITIONING ---
+                # Now we scale the pure AC signal and add the channel's vertical offset
+                trace = (centered_signal * self.current_scale) + (i * DEFAULT_Y_OFFSET)
+
                 self.curves[i].setData(trace)
 
     def perform_auto_scale(self):
