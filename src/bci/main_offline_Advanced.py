@@ -30,6 +30,7 @@ Usage:
 """
 
 import os
+import pickle
 import random
 import re
 import sys
@@ -710,12 +711,16 @@ def run_advanced_comparison_pipeline():
 
         final_clf.fit(X_train_final, y_train_final, random_state=config.random_state)
 
-        # Save the best model
+        # Save the best model and artefact removal (for online use)
         model_dir = current_wd / "resources" / "models"
         model_dir.mkdir(parents=True, exist_ok=True)
         model_path = model_dir / f"advanced_best_model_{best_config_name.lower()}.pkl"
+        artefact_path = model_dir / "advanced_artefact_removal.pkl"
         final_clf.save(str(model_path))
+        with open(artefact_path, "wb") as f:
+            pickle.dump(ar_final, f)
         print(f"Best model saved to: {model_path}")
+        print(f"ArtefactRemoval saved to: {artefact_path}")
 
     return all_results, df_results
 
