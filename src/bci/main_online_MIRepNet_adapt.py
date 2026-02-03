@@ -148,7 +148,7 @@ class MIRepNetBCIEngine:
         logger.info(f"Model configuration: {self.clf._n_classes} classes")
 
         # Initialize online EA adaptation (continuous domain adaptation)
-        self.clf.init_online_ea(alpha=0.1, min_samples=5)
+        self.clf.init_online_ea(alpha=0.1, min_samples=10)
         logger.info("Online EA adaptation enabled (alpha=0.1, min_samples=5)")
 
         # Artifact Rejection
