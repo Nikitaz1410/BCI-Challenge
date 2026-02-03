@@ -2,8 +2,11 @@
 Online BCI with Combined Adaptive LDA
 Real-time EEG classification with online parameter adaptation
 
-Uses CombinedAdaptiveLDA (winning model: HybridLDA + Core LDA with adaptive selection)
-The key feature: Model adapts its parameters after each trial based on true labels
+Combines HybridLDA and Core LDA with adaptive selection based on confidence.
+Model adapts its parameters after each trial based on true labels.
+
+Inspired by: "Adaptive LDA Classifier Enhances Real-Time Control of an EEG
+Brain–Computer Interface for Imagined-Syllables Decoding" (Wu et al.)
 """
 
 import pickle
@@ -22,7 +25,7 @@ import matplotlib.pyplot as plt
 
 # Try to import pylsl, install if missing
 try:
-    from pylsl import StreamInlet, resolve_streams, resolve_byprop
+    from pylsl import StreamInlet, resolve_streams
 except ImportError:
     import subprocess
     # sys is already imported at line 10
@@ -30,7 +33,7 @@ except ImportError:
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pylsl"], 
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        from pylsl import StreamInlet, resolve_streams, resolve_byprop
+        from pylsl import StreamInlet, resolve_streams
         print("✓ pylsl installed successfully!")
     except Exception as e:
         print(f"❌ Failed to install pylsl: {e}")
@@ -43,30 +46,12 @@ from bci.utils.bci_config import load_config
 from bci.models.adaptive_lda_modules.combined_adaptive_lda import CombinedAdaptiveLDA
 from bci.models.adaptive_lda_modules.feature_extraction import extract_log_bandpower_features
 
-# Marker definitions (CombinedAdaptiveLDA uses 0=rest, 1=left, 2=right)
+# Marker definitions (HybridLDA uses 0=rest, 1=left, 2=right)
 markers = {
     0: "rest",
     1: "left_hand",
     2: "right_hand"
 }
-
-# Import marker mapping from replay.py to keep them synchronized
-# This ensures replay.py and online script always use the same marker definitions
-try:
-    from bci.replay import CMD_MAP
-    # Create reverse mapping: string -> int
-    MARKER_STRING_TO_INT = {v: k for k, v in CMD_MAP.items()}
-    # Add dummy marker for stream initialization
-    MARKER_STRING_TO_INT["STREAM_READY"] = 0
-except ImportError:
-    # Fallback if replay.py is not available
-    MARKER_STRING_TO_INT = {
-        "CIRCLE ONSET": 0,
-        "ARROW LEFT ONSET": 1,
-        "ARROW RIGHT ONSET": 2,
-        "STREAM_READY": 0,  # Dummy marker from initialization
-    }
-    print("⚠️  Warning: Could not import CMD_MAP from replay.py. Using fallback mapping.")
 
 def extract_features(signals, sfreq):
     """Extract log-bandpower features for online use."""
@@ -113,7 +98,7 @@ if __name__ == "__main__":
     print(f"Loading Combined Adaptive LDA model from: {model_path}")
     if not model_path.exists():
         print(f"❌ Model not found: {model_path}")
-        print("Please train the model first using main_offline_AdaptiveLDA.py")
+        print("Please train the model first using main_offline_CombinedAdaptiveLDA.py")
         sys.exit(1)
     
     # Load model (saved as dict with 'model' key)
@@ -123,7 +108,6 @@ if __name__ == "__main__":
         model_sfreq = model_dict.get('sfreq', config.fs)
     
     print("✓ Model loaded successfully!")
-    print(f"  Model stats: {clf.get_stats()}")
     print(f"  Stage info: {clf.get_stage_info()}")
     print(f"  Number of features: {clf.n_features_}")
     print(f"  Model sampling frequency: {model_sfreq} Hz")
@@ -134,20 +118,8 @@ if __name__ == "__main__":
         print("⚠️  Warning: Artifact rejection file not found. Continuing without it.")
         ar = None
     else:
-        try:
-            # Fix for pickle files saved with old import paths (bci.Preprocessing -> bci.preprocessing)
-            import sys
-            from bci.preprocessing import artefact_removal
-            # Map old module paths to new ones for pickle compatibility
-            sys.modules['bci.Preprocessing'] = sys.modules['bci.preprocessing']
-            sys.modules['bci.Preprocessing.artefact_removal'] = artefact_removal
-
-            ar = pickle.load(open(artefact_rejection_path, "rb"))
-            print("✓ Artifact rejection thresholds loaded!")
-        except (ModuleNotFoundError, ImportError, AttributeError) as e:
-            print(f"⚠️  Warning: Could not load artifact rejection file: {e}")
-            print("   Continuing without artifact rejection.")
-            ar = None
+        ar = pickle.load(open(artefact_rejection_path, "rb"))
+        print("✓ Artifact rejection thresholds loaded!")
 
     # Initialize filter for online processing
     filter = Filter(config, online=True)
@@ -198,79 +170,14 @@ if __name__ == "__main__":
     print("SEARCHING FOR LSL STREAMS")
     print("="*60)
     print("Looking for EEG and Markers streams...")
-    print("(This may take up to 15 seconds)")
-    print("\n⚠️  IMPORTANT: Make sure 'replay.py' is running and actively streaming!")
-    print("   The streams must be sending data to be discoverable.")
-    print("   Wait 2-3 seconds after starting replay.py before running this script.\n")
+    print("(This may take up to 5 seconds)")
     
-    # Give streams a moment to become discoverable
-    time.sleep(1)
-    
-    # Try to resolve streams with retries
-    print("Waiting for LSL streams...")
-    streams = []
-    max_retries = 10  # Increased retries
-    wait_time = 2.0  # Shorter timeout per attempt, but more retries
-    
-    for attempt in range(max_retries):
-        try:
-            print(f"  Attempt {attempt + 1}/{max_retries}: Searching for streams (timeout: {wait_time}s)...")
-            
-            # Try resolve_streams first (finds all streams, more reliable)
-            try:
-                all_streams = list(resolve_streams(wait_time=wait_time))
-                if all_streams:
-                    print(f"    ✓ resolve_streams found {len(all_streams)} stream(s)")
-                    streams = all_streams
-            except Exception as e:
-                print(f"    ⚠ resolve_streams failed: {e}")
-                streams = []
-            
-            # Also try resolve_byprop for more specific matching
-            if not streams:
-                try:
-                    eeg_streams = list(resolve_byprop("type", "EEG", timeout=wait_time))
-                    marker_streams = list(resolve_byprop("type", "Markers", timeout=wait_time))
-                    streams = eeg_streams + marker_streams
-                    if streams:
-                        print(f"    ✓ resolve_byprop found {len(eeg_streams)} EEG stream(s), {len(marker_streams)} Marker stream(s)")
-                except Exception as e:
-                    print(f"    ⚠ resolve_byprop failed: {e}")
-                    streams = []
-            
-            # If we found streams, verify they're the right ones
-            if streams:
-                print(f"  ✓✓ Successfully found {len(streams)} stream(s)!")
-                # Show what we found for debugging
-                for s in streams:
-                    print(f"      - {s.name()} (type: {s.type()})")
-                break
-            else:
-                if attempt < max_retries - 1:
-                    wait_before_retry = 1.0 if attempt < 3 else 2.0
-                    print(f"  ⚠ No streams found yet. Waiting {wait_before_retry} seconds before retry...")
-                    time.sleep(wait_before_retry)
-                else:
-                    print(f"  ✗ No streams found after {max_retries} attempts.")
-        except KeyboardInterrupt:
-            print("\n  ⚠ Stream discovery interrupted by user.")
-            raise
-        except Exception as e:
-            print(f"  ✗ Attempt {attempt + 1}/{max_retries} failed with error: {e}")
-            if attempt < max_retries - 1:
-                wait_before_retry = 1.0 if attempt < 3 else 2.0
-                print(f"  Waiting {wait_before_retry} seconds before retry...")
-                time.sleep(wait_before_retry)
+    streams = resolve_streams(wait_time=5.0)
     
     # Show all available streams for debugging
     print(f"\n📡 Found {len(streams)} LSL stream(s):")
-    if streams:
-        for i, stream in enumerate(streams):
-            print(f"  {i+1}. Name: '{stream.name()}' | Type: '{stream.type()}' | Channels: {stream.channel_count()}")
-    else:
-        print("  (no streams found)")
-        print("\n⚠️  IMPORTANT: Make sure 'replay.py' is running in another terminal!")
-        print("   The streams only exist while 'replay.py' is actively running.")
+    for i, stream in enumerate(streams):
+        print(f"  {i+1}. Name: '{stream.name()}' | Type: '{stream.type()}' | Channels: {stream.channel_count()}")
     
     eeg_streams = [s for s in streams if s.type() == "EEG"]
     if config.online == "dino":
@@ -289,16 +196,9 @@ if __name__ == "__main__":
     if not eeg_streams:
         print("\n❌ ERROR: Could not find EEG stream!")
         print("   Available streams:")
-        if streams:
-            for s in streams:
-                print(f"     - {s.name()} (type: {s.type()})")
-        else:
-            print("     (none found)")
-        print("\n💡 TIP: To start a test stream, run in another terminal:")
-        print(f"   cd \"{current_wd}\"")
-        print("   python src/bci/replay.py")
-        print("\n   Or use real EEG hardware if available.")
-        print("   Then run this script again.")
+        for s in streams:
+            print(f"     - {s.name()} (type: {s.type()})")
+        print("\n💡 TIP: Make sure your EEG stream is running (replay.py or real hardware)")
         sys.exit(1)
     if not label_streams:
         print(f"\n❌ ERROR: Could not find Markers stream named '{expected_label_name}'!")
@@ -326,9 +226,8 @@ if __name__ == "__main__":
     print(f"  Sampling rate: {inlet.info().nominal_srate()} Hz")
     print(f"  Window size: {config.window_size} samples ({config.window_size/config.fs:.2f} seconds)")
     print("\n" + "="*60)
-    print("STARTING ONLINE COMBINED ADAPTIVE LDA CLASSIFICATION")
+    print("STARTING ONLINE ADAPTIVE LDA CLASSIFICATION")
     print("="*60)
-    print("Using CombinedAdaptiveLDA (HybridLDA + Core LDA with adaptive selection)")
     print("The model will adapt its parameters after each trial!")
     print("Press Ctrl+C to stop and view results")
     print("="*60 + "\n")
@@ -375,62 +274,14 @@ if __name__ == "__main__":
                     print("⚠️  Warning: No EEG data received in first iteration. Waiting for data...")
 
                 if labels_chunk:
-                    # Convert string markers to integers if needed
-                    # pylsl returns string markers as list of lists: [["ARROW LEFT ONSET"], ["CIRCLE ONSET"], ...]
-                    # or sometimes as a 2D array where each row is a sample
-                    processed_labels = []
-                    
-                    # Handle different formats from pylsl
-                    if isinstance(labels_chunk, np.ndarray):
-                        # If it's already a numpy array, flatten and process
-                        labels_flat = labels_chunk.flatten()
-                    elif isinstance(labels_chunk, (list, tuple)):
-                        # If it's a list, check if nested
-                        if len(labels_chunk) > 0 and isinstance(labels_chunk[0], (list, tuple, np.ndarray)):
-                            # Nested structure: [["ARROW LEFT ONSET"], ["CIRCLE ONSET"], ...]
-                            labels_flat = [item[0] if len(item) > 0 else 0 for item in labels_chunk]
-                        else:
-                            # Flat list: ["ARROW LEFT ONSET", "CIRCLE ONSET", ...]
-                            labels_flat = labels_chunk
-                    else:
-                        labels_flat = [labels_chunk]
-                    
-                    # Convert each label to integer
-                    for label_val in labels_flat:
-                        # Handle both Python strings and numpy string types (np.str_)
-                        if isinstance(label_val, (str, np.str_)):
-                            # Convert numpy string to Python string for processing
-                            label_str = str(label_val).strip()
-                            label_int = MARKER_STRING_TO_INT.get(label_str, 0)
-                        elif isinstance(label_val, (bytes, np.bytes_)):
-                            # Handle bytes (shouldn't happen but just in case)
-                            label_str = label_val.decode('utf-8').strip()
-                            label_int = MARKER_STRING_TO_INT.get(label_str, 0)
-                        else:
-                            # Already an integer or numeric
-                            try:
-                                label_int = int(float(label_val))
-                            except (ValueError, TypeError):
-                                label_int = 0
-                        processed_labels.append(label_int)
-                    
-                    # Convert to numpy array and ensure correct shape (1, n_samples)
-                    if len(processed_labels) > 0:
-                        processed_labels_array = np.array(processed_labels, dtype=np.int32)
-                        if processed_labels_array.ndim == 1:
-                            processed_labels_array = processed_labels_array.reshape(1, -1)  # shape (1, n_samples)
-                        
-                        n_new_labels = processed_labels_array.shape[1]
+                    labels_chunk = np.array(labels_chunk).T  # shape (1, n_samples)
+                    n_new_labels = labels_chunk.shape[1]
 
-                        if n_new_labels >= config.window_size:
-                            # If we have more labels than buffer size, just take the most recent ones
-                            label_buffer = processed_labels_array[:, -config.window_size :]
-                        else:
-                            # Shift buffer left and append new labels
-                            # Move existing data left by n_new_labels positions
-                            label_buffer[:, :-n_new_labels] = label_buffer[:, n_new_labels:]
-                            # Append new labels to the end
-                            label_buffer[:, -n_new_labels:] = processed_labels_array
+                    if n_new_labels >= config.window_size:
+                        label_buffer = labels_chunk[:, -config.window_size :]
+                    else:
+                        label_buffer[:, :-n_new_labels] = label_buffer[:, n_new_labels:]
+                        label_buffer[:, -n_new_labels:] = labels_chunk
 
                 # Extract the current label (most present in the buffer)
                 unique, counts = np.unique(label_buffer, return_counts=True)
@@ -451,7 +302,7 @@ if __name__ == "__main__":
                             trial_features = extract_features(trial_buffer_reshaped, config.fs)  # (1, n_features)
                             
                             # Adapt model parameters based on completed trial
-                            # CombinedAdaptiveLDA.update expects: label (0,1,2) and x_feature (1D array)
+                            # HybridLDA.update expects: label (0,1,2) and x_feature (1D array)
                             clf.update(trial_true_label, trial_features[0])
                             total_adaptations += 1
                             print(f"🔄 Adapted model (Trial ended: {markers.get(trial_true_label, 'unknown')} → {markers.get(crt_label, 'unknown')})")
@@ -475,7 +326,7 @@ if __name__ == "__main__":
                 # Reshape for feature extraction: (1, n_channels, n_samples)
                 filtered_data_reshaped = buffer[np.newaxis, :, :]
 
-                # Extract features (CombinedAdaptiveLDA expects features, not raw data)
+                # Extract features (HybridLDA expects features, not raw data)
                 features = extract_features(filtered_data_reshaped, config.fs)  # Shape: (1, n_features)
 
                 # Classify using extracted features
@@ -588,14 +439,10 @@ if __name__ == "__main__":
                         plt.ylim([0, 1.0])
 
                     plt.tight_layout()
-                    plot_path = current_wd / "combined_adaptive_lda_online_accuracy.png"
+                    plot_path = current_wd / "adaptive_lda_online_accuracy.png"
                     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
                     print(f"\n✓ Accuracy plot saved: {plot_path}")
                     plt.close()
 
                 print("="*60)
-                print("\n✅ ONLINE PROCESSING COMPLETE")
-                print("="*60)
-                print("All results have been displayed and saved.")
-                print("="*60 + "\n")
                 break

@@ -59,9 +59,18 @@ class BCIReplayer:
             source_id="bci_replay_labels_001",
         )
         self.outlet_labels = StreamOutlet(info_labels)
+        
+        # Send initial dummy data to make streams discoverable immediately
+        # LSL streams need to be actively sending data to be discoverable
+        dummy_eeg = np.zeros((len(self.config.channels), 1), dtype=np.float32)
+        self.outlet_eeg.push_chunk(dummy_eeg.T.tolist())
+        # Send a dummy marker to make marker stream discoverable
+        self.outlet_labels.push_sample(["STREAM_READY"])
         logger.info(
             f"LSL Streams initialized. EEG: {self.fs}Hz, Markers: Sparse (Event-based)."
         )
+        logger.info("✓ Streams are now discoverable. Waiting 1 second for LSL discovery...")
+        time.sleep(1)  # Give LSL time to register the streams
 
     def stream(self, eeg_data: np.ndarray, events: np.ndarray):
         """
@@ -132,7 +141,28 @@ class BCIReplayer:
             if i % (int(self.fs / self.chunk_size) * 5) == 0:
                 logger.debug(f"Stream heartbeat: {i}/{total_chunks}")
 
-        logger.info("Replay finished.")
+        logger.info("Replay finished. Keeping streams alive...")
+        logger.info("Press Ctrl+C to stop streaming.")
+        
+        # Keep streams alive by sending dummy data periodically
+        # This prevents the streams from disconnecting when replay finishes
+        try:
+            dummy_eeg = np.zeros((len(self.config.channels), self.chunk_size), dtype=np.float32)
+            heartbeat_interval = 0.5  # Send dummy data every 0.5 seconds (more frequent)
+            marker_interval = 2.0  # Send marker every 2 seconds
+            last_marker_time = time.time()
+            logger.info(f"Streams will stay alive. Sending heartbeat every {heartbeat_interval}s")
+            while True:
+                time.sleep(heartbeat_interval)
+                # Send dummy EEG chunk to keep stream alive
+                self.outlet_eeg.push_chunk(dummy_eeg.T.tolist())
+                # Also send a dummy marker periodically to keep marker stream alive
+                current_time = time.time()
+                if current_time - last_marker_time >= marker_interval:
+                    self.outlet_labels.push_sample(["STREAM_ALIVE"])
+                    last_marker_time = current_time
+        except KeyboardInterrupt:
+            logger.info("Streaming stopped by user.")
 
 
 def load_dataset(config, current_wd):
