@@ -1,9 +1,35 @@
 import sys
-import zmq
+
+# Check all required dependencies
+missing_modules = []
+
+try:
+    import zmq
+except ImportError:
+    missing_modules.append("pyzmq")
+
+try:
+    import pyqtgraph as pg
+except ImportError:
+    missing_modules.append("pyqtgraph")
+
+try:
+    from PyQt5 import QtCore, QtGui, QtWidgets
+except ImportError:
+    missing_modules.append("PyQt5")
+
+if missing_modules:
+    print("❌ ERROR: Missing required modules!")
+    print(f"   Missing: {', '.join(missing_modules)}")
+    print("\n   Install them in your conda environment:")
+    print(f"   conda activate bci-challenge")
+    print(f"   pip install {' '.join(missing_modules)}")
+    print("\n   Or install all at once:")
+    print(f"   /opt/miniconda3/envs/bci-challenge/bin/pip install {' '.join(missing_modules)}")
+    sys.exit(1)
+
 import numpy as np
-import pyqtgraph as pg
 from collections import deque
-from PyQt5 import QtCore, QtGui, QtWidgets
 
 # --- Configuration ---
 PORT = "5556"

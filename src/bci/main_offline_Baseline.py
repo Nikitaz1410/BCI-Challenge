@@ -258,6 +258,7 @@ def run_cv_for_config(
 
         try:
             # Handle HybridLDA differently (uses wrapper with feature extraction)
+            # Note: use_improved_composition defaults to True in HybridLDAWrapper
             if model_config["classifier"] == "hybrid_lda":
                 clf = HybridLDAWrapper(
                     features=model_config["features"],
@@ -488,11 +489,20 @@ def run_baseline_comparison_pipeline():
 
     # Get unique sessions
     unique_sessions = np.unique(groups)
-    n_folds = len(unique_sessions)  # One fold per session (leave-one-session-out)
+    n_sessions = len(unique_sessions)
+    
+    # Force 11-fold CV (override dynamic calculation)
+    n_folds_target = 11
+    n_folds = min(n_folds_target, n_sessions) if n_sessions > 0 else n_folds_target
+    
+    if n_folds < n_folds_target:
+        print(f"WARNING: Only {n_sessions} sessions available, using {n_folds}-fold CV instead of {n_folds_target}-fold")
+    else:
+        print(f"Using {n_folds_target}-fold cross-validation (forced)")
 
     print(f"Training data shape: {X_train.shape}")
     print(f"Labels distribution: {np.unique(y_train, return_counts=True)}")
-    print(f"Number of sessions (CV groups): {len(unique_sessions)}")
+    print(f"Number of sessions (CV groups): {n_sessions}")
     print(f"Sessions: {list(unique_sessions)}")
     print(f"Adjusted folds for CV: {n_folds}")
 
