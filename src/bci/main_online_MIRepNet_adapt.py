@@ -18,12 +18,12 @@ Pipeline:
    - Publish data via ZMQ (for visualization)
 
 Requirements:
-- Pre-trained MIRepNet model (from main_offline_MIRepNet.py)
+- Pre-trained MIRepNet model with Autoreject (from main_offline_MIRepNet_ar.py)
 - LSL EEG stream
 - Optional: LSL Markers stream for evaluation
 
 Usage:
-    python main_online_MIRepNet.py
+    python main_online_MIRepNet_adapt.py
 """
 
 import logging
@@ -126,13 +126,14 @@ class MIRepNetBCIEngine:
     def _init_models(self):
         """Load MIRepNet model, artifact rejection, and signal filters."""
         base_path = Path.cwd() / "resources" / "models"
-        model_path = base_path / "mirepnet_best_model.pt"
-        artifact_path = base_path / "artefact_removal.pkl"
+        # Model and artefact removal trained in main_offline_MIRepNet_ar.py
+        model_path = base_path / "mirepnet_ar_best_model.pt"
+        artifact_path = base_path / "mirepnet_artefact_removal.pkl"
 
         if not model_path.exists():
             raise FileNotFoundError(
                 f"MIRepNet model not found at {model_path}. "
-                "Train the model first using main_offline_MIRepNet.py"
+                "Train and save the model first using main_offline_MIRepNet_ar.py"
             )
 
         # Signal Filter (online mode; use all channels)
@@ -148,18 +149,18 @@ class MIRepNetBCIEngine:
         logger.info(f"Model configuration: {self.clf._n_classes} classes")
 
         # Initialize online EA adaptation (continuous domain adaptation)
-        self.clf.init_online_ea(alpha=0.1, min_samples=10)
-        logger.info("Online EA adaptation enabled (alpha=0.1, min_samples=5)")
+        self.clf.init_online_ea(alpha=0.1, min_samples=30)
+        logger.info("Online EA adaptation enabled (alpha=0.1, min_samples=30)")
 
-        # Artifact Rejection
+        # Artifact Rejection (thresholds trained in main_offline_MIRepNet_ar.py)
         if artifact_path.exists():
             with open(artifact_path, "rb") as f:
                 self.ar = pickle.load(f)
-            logger.info("Artifact rejection loaded")
+            logger.info(f"MIRepNet ArtefactRemoval loaded from {artifact_path}")
             self.use_artifact_rejection = True
         else:
             logger.warning(
-                "Artifact rejection file not found. Running without artifact rejection."
+                "MIRepNet artefact rejection file not found. Running without artefact rejection."
             )
             self.ar = None
             self.use_artifact_rejection = False

@@ -18,6 +18,13 @@ import time
 from collections import deque
 from os.path import join
 from typing import Optional
+from pathlib import Path
+import sys
+
+# Ensure project `src` directory is on Python path (for `bci` imports)
+src_dir = Path(__file__).parent.parent.parent  # .../src
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
 
 # =============================================================================
 # Third-party

@@ -6,7 +6,10 @@ It mirrors the structure of main_online_Riemann.py and expects:
 
 1. A pre-trained MIRepNet model saved by main_offline_MIRepNet.py
    (resources/models/mirepnet_best_model.pt)
-2. Artifact rejection thresholds (resources/models/artefact_removal.pkl)
+   or by main_offline_MIRepNet_ar.py
+   (resources/models/mirepnet_ar_best_model.pt)
+2. Artifact rejection thresholds, e.g. for the _ar variant:
+   (resources/models/mirepnet_artefact_removal.pkl)
 
 Pipeline:
 1. Load configuration and pre-trained MIRepNet model
@@ -92,13 +95,19 @@ class BCIEngine:
     def _init_models(self):
         """Load MIRepNet model and signal filter."""
         base_path = Path.cwd() / "resources" / "models"
-        model_path = base_path / "mirepnet_best_model.pt"
-        artifact_path = base_path / "artefact_removal.pkl"
+        # Prefer AR-trained MIRepNet model if available, otherwise fall back.
+        ar_model_path = base_path / "mirepnet_ar_best_model.pt"
+        default_model_path = base_path / "mirepnet_best_model.pt"
+        model_path = ar_model_path if ar_model_path.exists() else default_model_path
+
+        # MIRepNet-specific artefact removal thresholds (if available).
+        artifact_path = base_path / "mirepnet_artefact_removal.pkl"
 
         if not model_path.exists():
             raise FileNotFoundError(
                 f"MIRepNet model not found at {model_path}. "
-                "Train the model first using main_offline_MIRepNet.py"
+                "Train the model first using main_offline_MIRepNet_ar.py "
+                "or main_offline_MIRepNet.py"
             )
 
         # Signal Filter: MIRepNet uses all channels (no removal), so Filter must
@@ -112,15 +121,15 @@ class BCIEngine:
         self.clf = MIRepNetModel.load(str(model_path), device="auto")
         self._ensure_ea_ref_for_online()
 
-        # Artifact Rejection
+        # Artifact Rejection: only use MIRepNet-specific AR if available.
         if artifact_path.exists():
             with open(artifact_path, "rb") as f:
                 self.ar = pickle.load(f)
             logger.info(f"Loaded artifact rejection from {artifact_path}")
         else:
             logger.warning(
-                f"Artifact rejection file not found at {artifact_path}. "
-                "Continuing without artifact rejection."
+                "MIRepNet artefact rejection file not found. "
+                "Running without artefact rejection."
             )
             self.ar = None
 

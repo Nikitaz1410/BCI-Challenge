@@ -48,7 +48,7 @@ test: "sub-P554" # Options: sub-P999, sub-P554
 target: "sub" # Folder name with all target subject data
 
 # Online
-online: "prerecorded" # Options: dino (Needs an active eeg stream), prerecorded (for testing)
+online: "dino" # Options: dino (Needs an active eeg stream), prerecorded (for testing)
 replay_subject_id: "Dino-6" # Options: Phy-### (for Physionet data), Dino-## (Plays one dino game from Fina)
 ip: "127.0.0.1" # IP address for UDP communication to the dino game (Check the dino game for the values)
 port: 5005 # Port for the UDP communication to the dino game
