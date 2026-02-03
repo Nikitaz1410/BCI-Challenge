@@ -417,8 +417,8 @@ def run_baseline_comparison_pipeline():
             all_target_raws,
             all_target_events,
             target_metadata["filenames"],
-            num_general=3,
-            num_dino=17,
+            num_general=6,
+            num_dino=18,
             num_supression=0,
             shuffle=True,
         )

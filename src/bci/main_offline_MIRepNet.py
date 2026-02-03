@@ -418,7 +418,7 @@ def run_mirepnet_comparison_pipeline(
             all_target_events,
             target_metadata["filenames"],
             num_general=6,
-            num_dino=19,
+            num_dino=18,
             num_supression=0,
             shuffle=True,
         )
