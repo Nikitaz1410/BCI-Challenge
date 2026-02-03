@@ -28,10 +28,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import GroupKFold
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, accuracy_score, balanced_accuracy_score, f1_score, brier_score_loss
+from sklearn.preprocessing import label_binarize
 
 # Evaluation
-from bci.evaluation.metrics import MetricsTable, compile_metrics
+from bci.evaluation.metrics import MetricsTable, compile_metrics, expected_calibration_error
 
 # Data Acquisition
 from bci.loading.loading import (
@@ -236,15 +237,12 @@ if __name__ == "__main__":
     metrics_table = MetricsTable()
 
     # Force 11-fold CV (override config, matching baseline)
+    # Note: GroupKFold will be recreated after we know the actual number of groups
     n_folds_target = 11
-    print(f"Using {n_folds_target}-fold cross-validation (forced, matching baseline)")
+    print(f"Target: {n_folds_target}-fold cross-validation (matching baseline)")
     print(f"Random state: {config.random_state} (for reproducibility)")
     
-    gkf = None
-    if n_folds_target < 2:
-        print("No cross-validation will be performed.")
-    else:
-        gkf = GroupKFold(n_splits=n_folds_target)
+    gkf = None  # Will be created after we know the number of unique groups
 
     filter_obj = Filter(config, online=False)
 
@@ -370,6 +368,12 @@ if __name__ == "__main__":
     print(f"Sessions: {list(unique_sessions)}")
     print(f"Adjusted folds for CV: {n_folds_actual}")
 
+    # Recreate GroupKFold with the correct number of splits (must be <= number of groups)
+    if n_folds_actual >= 2:
+        gkf = GroupKFold(n_splits=n_folds_actual)
+    else:
+        gkf = None
+
     # ==========================================================================
     # 5. Cross-Validation with CombinedAdaptiveLDA (matching baseline methodology)
     # ==========================================================================
@@ -431,7 +435,7 @@ if __name__ == "__main__":
             )
 
             start_train = time.time() * 1000
-            fold_clf.fit(train_features, y_train_fold)
+            fold_clf.fit(train_features, y_train_clean)  # Use cleaned labels after artifact removal
             end_train = time.time() * 1000
 
             # Predict on validation fold
@@ -458,29 +462,35 @@ if __name__ == "__main__":
             cv_confusion_matrices.append(confusion_matrix(y_val_clean, fold_preds))
             print(f"Fold {fold_idx + 1} Accuracy: {fold_metrics['Acc.']:.4f}")
 
-        # CV Summary
+        # CV Summary (matching baseline format)
         print("\n" + "=" * 60)
         print("CROSS-VALIDATION RESULTS (Mean +/- Std)")
         print("=" * 60)
 
-        cv_mean_metrics = {}
-        cv_std_metrics = {}
-        metric_keys = cv_metrics_list[0].keys()
+        # Format CV results like baseline: mean +/- std for key metrics
+        cv_result = {"Model": "CombinedAdaptiveLDA"}
+        metric_keys = ["Acc.", "B. Acc.", "F1 Score", "ECE", "Brier"]
 
         for key in metric_keys:
-            values = [m[key] for m in cv_metrics_list]
-            cv_mean_metrics[key] = np.mean(values)
-            cv_std_metrics[key] = np.std(values)
-
-        cv_summary = {"Dataset": "CV (Training)"}
-        for key in metric_keys:
-            if "Time" in key or "Latency" in key or "ITR" in key:
-                cv_summary[key] = f"{cv_mean_metrics[key]:.2f} +/- {cv_std_metrics[key]:.2f}"
+            values = [m[key] for m in cv_metrics_list if key in m]
+            if values:
+                mean_val = np.mean(values)
+                std_val = np.std(values)
+                cv_result[key] = f"{mean_val:.4f} +/- {std_val:.4f}"
             else:
-                cv_summary[key] = f"{cv_mean_metrics[key]:.4f} +/- {cv_std_metrics[key]:.4f}"
+                cv_result[key] = "N/A"
 
-        metrics_table.add_rows([cv_summary])
-        metrics_table.display()
+        # Add timing info if available
+        if cv_metrics_list and "train_time" in cv_metrics_list[0]:
+            fold_times = [m.get("train_time", 0) / 1000.0 for m in cv_metrics_list]  # Convert ms to seconds
+            cv_result["Avg. Fold Time (s)"] = f"{np.mean(fold_times):.1f}"
+        else:
+            cv_result["Avg. Fold Time (s)"] = "N/A"
+
+        # Display using MetricsTable (matching baseline)
+        cv_table = MetricsTable()
+        cv_table.add_rows([cv_result])
+        cv_table.display()
 
         # Save average confusion matrix
         if len(cv_confusion_matrices) > 0:
@@ -672,91 +682,118 @@ if __name__ == "__main__":
             adapted_metrics["Acc."] = adapt_results['acc_post_adapt']
             metrics_table.add_rows([adapted_metrics])
 
-        # Display final results
-        print("\n" + "=" * 60)
-        print("FINAL RESULTS SUMMARY")
-        print("=" * 60)
-        metrics_table.display()
+    # ==========================================================================
+    # 9. Final Summary Table: Metrics With and Without Adaptation
+    # ==========================================================================
+    print("\n" + "=" * 80)
+    print("FINAL EVALUATION SUMMARY: WITH AND WITHOUT ADAPTATION")
+    print("=" * 80)
+    
+    summary_data = []
+    
+    # CV Results (No Adaptation)
+    if 'cv_metrics_list' in locals() and len(cv_metrics_list) > 0:
+        cv_mean_metrics = {}
+        cv_std_metrics = {}
+        metric_keys = ["Acc.", "B. Acc.", "F1 Score", "ECE", "Brier"]
         
-        # Create comprehensive summary table (matching baseline)
-        print("\n" + "=" * 80)
-        print("COMPREHENSIVE RESULTS SUMMARY TABLE")
-        print("=" * 80)
-        
-        summary_data = []
-        
-        # CV Results (if CV was performed)
-        if 'cv_metrics_list' in locals() and len(cv_metrics_list) > 0:
-            cv_mean_metrics = {}
-            cv_std_metrics = {}
-            metric_keys = cv_metrics_list[0].keys()
-            for key in metric_keys:
-                values = [m[key] for m in cv_metrics_list]
+        for key in metric_keys:
+            values = [m[key] for m in cv_metrics_list if key in m]
+            if values:
                 cv_mean_metrics[key] = np.mean(values)
                 cv_std_metrics[key] = np.std(values)
+            else:
+                cv_mean_metrics[key] = 0.0
+                cv_std_metrics[key] = 0.0
+        
+        summary_data.append({
+            "Phase": "Cross-Validation (No Adaptation)",
+            "Acc.": f"{cv_mean_metrics.get('Acc.', 0):.4f} +/- {cv_std_metrics.get('Acc.', 0):.4f}",
+            "B. Acc.": f"{cv_mean_metrics.get('B. Acc.', 0):.4f} +/- {cv_std_metrics.get('B. Acc.', 0):.4f}",
+            "F1 Score": f"{cv_mean_metrics.get('F1 Score', 0):.4f} +/- {cv_std_metrics.get('F1 Score', 0):.4f}",
+            "ECE": f"{cv_mean_metrics.get('ECE', 0):.4f} +/- {cv_std_metrics.get('ECE', 0):.4f}",
+            "Brier": f"{cv_mean_metrics.get('Brier', 0):.4f} +/- {cv_std_metrics.get('Brier', 0):.4f}",
+        })
+    
+    # Test Results (No Adaptation) - Only if test set is enabled
+    if use_test and len(x_raw_test) > 0 and 'test_metrics' in locals():
+        summary_data.append({
+            "Phase": "Test (No Adaptation)",
+            "Acc.": f"{test_metrics.get('Acc.', 0):.4f}",
+            "B. Acc.": f"{test_metrics.get('B. Acc.', 0):.4f}",
+            "F1 Score": f"{test_metrics.get('F1 Score', 0):.4f}",
+            "ECE": f"{test_metrics.get('ECE', 0):.4f}",
+            "Brier": f"{test_metrics.get('Brier', 0):.4f}",
+        })
+        
+        # Test Results (With Adaptation)
+        if use_adaptation_simulation and 'adapt_results' in locals():
+            y_true = y_test_windows
+            y_pred_with_adapt = adapt_results['predictions_post_adapt']
+            
+            # Compute all metrics for adapted version
+            acc_adapt = accuracy_score(y_true, y_pred_with_adapt)
+            bacc_adapt = balanced_accuracy_score(y_true, y_pred_with_adapt)
+            f1_adapt = f1_score(y_true, y_pred_with_adapt, average='weighted')
+            
+            # Get probabilities for adapted predictions (re-predict with adapted model)
+            test_features_adapt = extract_features(X_test_windows, config.fs)
+            test_probs_adapt = clf_adapt.predict_proba(test_features_adapt)
+            
+            # Compute ECE and Brier for adapted version
+            ece_adapt = expected_calibration_error(y_true, test_probs_adapt, n_bins=10)
+            # Brier score for multi-class (one-vs-rest)
+            y_true_bin = label_binarize(y_true, classes=[0, 1, 2])
+            brier_adapt = np.mean([brier_score_loss(y_true_bin[:, i], test_probs_adapt[:, i]) 
+                                   for i in range(3)])
+            
+            # Calculate improvement
+            acc_improvement = acc_adapt - test_metrics.get('Acc.', 0)
+            acc_improvement_str = f"{acc_improvement:+.4f}" if acc_improvement != 0 else "0.0000"
             
             summary_data.append({
-                "Phase": "Cross-Validation",
-                "Accuracy": f"{cv_mean_metrics.get('Acc.', 0):.4f} ± {cv_std_metrics.get('Acc.', 0):.4f}",
-                "Balanced Acc.": f"{cv_mean_metrics.get('B. Acc.', 0):.4f} ± {cv_std_metrics.get('B. Acc.', 0):.4f}",
-                "F1 Score": f"{cv_mean_metrics.get('F1 Score', 0):.4f} ± {cv_std_metrics.get('F1 Score', 0):.4f}",
-                "ECE": f"{cv_mean_metrics.get('ECE', 0):.4f} ± {cv_std_metrics.get('ECE', 0):.4f}",
-                "Samples": f"{len(X_train_clean)}",
+                "Phase": f"Test (With Adaptation) [Δ={acc_improvement_str}]",
+                "Acc.": f"{acc_adapt:.4f}",
+                "B. Acc.": f"{bacc_adapt:.4f}",
+                "F1 Score": f"{f1_adapt:.4f}",
+                "ECE": f"{ece_adapt:.4f}",
+                "Brier": f"{brier_adapt:.4f}",
             })
+    
+    # Display summary table using MetricsTable (matching baseline format)
+    if summary_data:
+        summary_table = MetricsTable()
+        summary_table.add_rows(summary_data)
+        summary_table.display()
         
-        # Test Results (No Adaptation) - Only if test set is enabled
-        if use_test and len(x_raw_test) > 0 and 'test_metrics' in locals():
-            summary_data.append({
-                "Phase": "Test (No Adaptation)",
-                "Accuracy": f"{test_metrics.get('Acc.', 0):.4f}",
-                "Balanced Acc.": f"{test_metrics.get('B. Acc.', 0):.4f}",
-                "F1 Score": f"{test_metrics.get('F1 Score', 0):.4f}",
-                "ECE": f"{test_metrics.get('ECE', 0):.4f}",
-                "Samples": f"{len(y_test_windows)}",
-            })
-            
-            # Test Results (With Adaptation)
-            if use_adaptation_simulation:
-                adapt_change = adapt_results['acc_post_adapt'] - adapt_results['acc_no_adapt']
-                adapt_change_str = f"{adapt_change:+.4f}" if adapt_change != 0 else "0.0000"
-                summary_data.append({
-                    "Phase": "Test (With Adaptation)",
-                    "Accuracy": f"{adapt_results['acc_post_adapt']:.4f} ({adapt_change_str})",
-                    "Balanced Acc.": f"{test_metrics.get('B. Acc.', 0):.4f}",
-                    "F1 Score": f"{test_metrics.get('F1 Score', 0):.4f}",
-                    "ECE": f"{test_metrics.get('ECE', 0):.4f}",
-                    "Samples": f"{len(y_test_windows)}",
-                    "Updates": f"{adapt_results['update_stats'].get('n_updates', 'N/A')}",
-                })
+        print("=" * 80)
+        print(f"Cross-Validation: {n_folds_actual}-fold (session-wise grouping)")
+        print(f"Random State: {config.random_state} (for reproducibility)")
+        if use_adaptation_simulation and 'adapt_results' in locals():
+            print(f"Adaptation Updates: {adapt_results['update_stats'].get('n_updates', 'N/A')}")
+        print("=" * 80)
         
-        # Display summary table
-        if summary_data:
-            summary_df = pd.DataFrame(summary_data)
-            print(summary_df.to_string(index=False))
-            print("=" * 80)
-            print(f"Cross-Validation: {n_folds_actual}-fold (session-wise grouping)")
-            print(f"Random State: {config.random_state} (for reproducibility)")
-            print("=" * 80)
-            
-            # Save summary to file
-            summary_path = current_wd / "combined_adaptive_lda_results_summary.csv"
-            summary_df.to_csv(summary_path, index=False)
-            print(f"\nResults summary saved to: {summary_path}")
+        # Save summary to CSV
+        summary_df = pd.DataFrame(summary_data)
+        summary_path = current_wd / "combined_adaptive_lda_results_summary.csv"
+        summary_df.to_csv(summary_path, index=False)
+        print(f"\nResults summary saved to: {summary_path}")
 
-        # Save test confusion matrix
-        test_cm = confusion_matrix(y_test_windows, test_preds)
-        plt.figure(figsize=(8, 6))
-        sns.heatmap(test_cm, annot=True, fmt='d', cmap='Greens',
-                    xticklabels=['Rest', 'Left', 'Right'],
-                    yticklabels=['Rest', 'Left', 'Right'])
-        plt.xlabel('Predicted', fontsize=12, fontweight='bold')
-        plt.ylabel('True', fontsize=12, fontweight='bold')
-        plt.title('CombinedAdaptiveLDA Test - Confusion Matrix', fontsize=14, fontweight='bold')
-        plt.tight_layout()
-        test_cm_path = current_wd / "combined_adaptive_lda_test_confusion_matrix.png"
-        plt.savefig(test_cm_path, dpi=150)
-        print(f"\nTest confusion matrix saved: {test_cm_path}")
-        plt.close()
+        # Save test confusion matrix (only if test set was used)
+        if use_test and len(x_raw_test) > 0 and 'test_preds' in locals() and 'y_test_windows' in locals():
+            test_cm = confusion_matrix(y_test_windows, test_preds)
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(test_cm, annot=True, fmt='d', cmap='Greens',
+                        xticklabels=['Rest', 'Left', 'Right'],
+                        yticklabels=['Rest', 'Left', 'Right'])
+            plt.xlabel('Predicted', fontsize=12, fontweight='bold')
+            plt.ylabel('True', fontsize=12, fontweight='bold')
+            plt.title('CombinedAdaptiveLDA Test - Confusion Matrix', fontsize=14, fontweight='bold')
+            plt.tight_layout()
+            test_cm_path = current_wd / "combined_adaptive_lda_test_confusion_matrix.png"
+            plt.savefig(test_cm_path, dpi=150)
+            print(f"\nTest confusion matrix saved: {test_cm_path}")
+            plt.close()
 
     # ==========================================================================
     # 9. Save the Trained Model
