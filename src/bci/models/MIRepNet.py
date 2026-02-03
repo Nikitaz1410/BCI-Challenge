@@ -193,7 +193,10 @@ def EA(x: np.ndarray, refEA: Optional[np.ndarray] = None) -> tuple[np.ndarray, n
     if refEA is None:
         refEA = np.mean(cov, 0)
     
-    sqrtRefEA = fractional_matrix_power(refEA, -0.5)
+    # Small regularization for numerical stability (avoid singular/near-singular matrices)
+    eps = 1e-6
+    refEA_reg = refEA + eps * np.eye(refEA.shape[0], dtype=refEA.dtype)
+    sqrtRefEA = fractional_matrix_power(refEA_reg, -0.5)
     XEA = np.zeros(x.shape)
     for i in range(x.shape[0]):
         XEA[i] = np.dot(sqrtRefEA, x[i])
@@ -364,6 +367,100 @@ class MIRepNetModel:
         self._ea_ref_by_subject: Optional[Dict[int, np.ndarray]] = None
         self._label_to_index: Optional[Dict[int, int]] = None
         self._index_to_label: Optional[Dict[int, int]] = None
+
+        # Online EA adaptation state
+        self._online_ea_ref: Optional[np.ndarray] = None
+        self._online_ea_n_samples: int = 0
+        self._online_ea_alpha: float = 0.1  # EMA smoothing factor
+        self._online_ea_min_samples: int = 20  # Min samples before EMA starts
+
+    # ------------------------- Online EA Adaptation ----------------------- #
+
+    def init_online_ea(
+        self,
+        alpha: float = 0.1,
+        min_samples: int = 20,
+    ) -> None:
+        """
+        Initialize online EA adaptation from stored training reference.
+
+        Call this before starting online inference to enable continuous
+        adaptation of the Euclidean Alignment reference.
+
+        Parameters
+        ----------
+        alpha : float
+            EMA smoothing factor (0 < alpha <= 1). Higher values adapt faster.
+            Default: 0.1 (slow adaptation, stable).
+        min_samples : int
+            Minimum number of samples before EMA adaptation starts.
+            Until then, covariances are accumulated and averaged.
+            Default: 20.
+        """
+        self._online_ea_alpha = alpha
+        self._online_ea_min_samples = min_samples
+        self._online_ea_n_samples = 0
+
+        # Initialize from stored training reference (pipeline assumes same subject)
+        if self._ea_ref_by_subject and len(self._ea_ref_by_subject) > 0:
+            first_ref = next(iter(self._ea_ref_by_subject.values()))
+            self._online_ea_ref = first_ref.copy()
+            print(f"Online EA initialized from training reference (shape: {self._online_ea_ref.shape})")
+        else:
+            self._online_ea_ref = None
+            print("Online EA will be computed from incoming data (no training reference)")
+
+    def _apply_ea_online(self, signals: np.ndarray) -> np.ndarray:
+        """
+        Apply Euclidean Alignment with continuous adaptation.
+
+        Updates the EA reference using exponential moving average (EMA)
+        of incoming covariance matrices.
+
+        Parameters
+        ----------
+        signals : np.ndarray
+            EEG signals of shape (N, C, T)
+
+        Returns
+        -------
+        np.ndarray
+            EA-aligned signals of shape (N, C, T)
+        """
+        n_samples = signals.shape[0]
+        signals = signals.astype(np.float32)
+
+        # Compute covariance for each sample in batch
+        batch_covs = np.zeros((n_samples, signals.shape[1], signals.shape[1]))
+        for i in range(n_samples):
+            batch_covs[i] = np.cov(signals[i])
+
+        # Mean covariance of current batch
+        batch_mean_cov = np.mean(batch_covs, axis=0)
+
+        # Update online EA reference
+        if self._online_ea_ref is None:
+            # First batch: initialize reference
+            self._online_ea_ref = batch_mean_cov
+            self._online_ea_n_samples = n_samples
+        elif self._online_ea_n_samples < self._online_ea_min_samples:
+            # Accumulation phase: running mean until min_samples
+            total = self._online_ea_n_samples + n_samples
+            self._online_ea_ref = (
+                self._online_ea_ref * self._online_ea_n_samples + batch_mean_cov * n_samples
+            ) / total
+            self._online_ea_n_samples = total
+        else:
+            # EMA phase: exponential moving average
+            self._online_ea_ref = (
+                (1 - self._online_ea_alpha) * self._online_ea_ref
+                + self._online_ea_alpha * batch_mean_cov
+            )
+            self._online_ea_n_samples += n_samples
+
+        # Apply EA using current reference
+        aligned, _ = EA(signals, refEA=self._online_ea_ref)
+        return aligned.astype(np.float32)
 
     # ------------------------- Training & prediction --------------------- #
 
@@ -612,12 +709,20 @@ class MIRepNetModel:
         self,
         signals: np.ndarray,
         subject_ids: Optional[np.ndarray] = None,
+        adapt_ea: bool = False,
     ) -> np.ndarray:
         """
         Return class probabilities for classification.
 
-        signals: numpy array shaped [N, C, T]
-        subject_ids: optional array shaped [N] mapping each trial to a subject
+        Parameters
+        ----------
+        signals : np.ndarray
+            EEG signals shaped [N, C, T]
+        subject_ids : np.ndarray, optional
+            Array shaped [N] mapping each trial to a subject (for offline use)
+        adapt_ea : bool
+            If True, use online EA adaptation (call init_online_ea first).
+            If False, use static EA reference from training (default).
 
         Returns
         -------
@@ -630,14 +735,18 @@ class MIRepNetModel:
         if signals.ndim != 3:
             raise ValueError("Signals must have shape [N, C, T].")
 
-        # Preprocess signals: per-subject EA and channel padding.
-        # Use stored EA ref from fit() when available (no data leakage in CV).
-        signals_processed, ea_refs = _apply_ea_by_subject(
-            signals.astype(np.float32),
-            subject_ids,
-            ref_by_subject=self._ea_ref_by_subject,
-        )
-        self._ea_ref_by_subject = ea_refs
+        # Apply Euclidean Alignment
+        if adapt_ea:
+            # Online mode: continuous EA adaptation
+            signals_processed = self._apply_ea_online(signals)
+        else:
+            # Offline mode: static EA reference per subject
+            signals_processed, ea_refs = _apply_ea_by_subject(
+                signals.astype(np.float32),
+                subject_ids,
+                ref_by_subject=self._ea_ref_by_subject,
+            )
+            self._ea_ref_by_subject = ea_refs
 
         # Always pad/interpolate to 45 channels (model requirement)
         target_num_channels = len(TARGET_CHANNELS)  # 45 channels

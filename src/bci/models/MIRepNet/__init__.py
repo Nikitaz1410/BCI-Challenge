@@ -12,5 +12,8 @@ _wrapper = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_wrapper)
 
 MIRepNetModel = _wrapper.MIRepNetModel
+EA = _wrapper.EA
+pad_missing_channels_diff = _wrapper.pad_missing_channels_diff
+TARGET_CHANNELS = _wrapper.TARGET_CHANNELS
 
-__all__ = ["MIRepNetModel"]
+__all__ = ["MIRepNetModel", "EA", "pad_missing_channels_diff", "TARGET_CHANNELS"]

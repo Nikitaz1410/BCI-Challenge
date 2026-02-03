@@ -28,7 +28,7 @@ from sklearn.model_selection import GroupKFold
 from sklearn.metrics import confusion_matrix
 
 # Evaluation
-from bci.Evaluation.metrics import MetricsTable, compile_metrics
+from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
 from bci.loading.loading import (
@@ -39,9 +39,9 @@ from bci.loading.loading import (
 )
 
 # Preprocessing
-from bci.Preprocessing.filters import Filter
-from bci.Preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
-from bci.Preprocessing.artefact_removal import ArtefactRemoval
+from bci.preprocessing.filters import Filter
+from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
+from bci.preprocessing.artefact_removal import ArtefactRemoval
 
 # Models - HybridLDA for 2-stage classification
 from bci.models.AdaptiveLDA_modules.hybrid_lda import HybridLDA

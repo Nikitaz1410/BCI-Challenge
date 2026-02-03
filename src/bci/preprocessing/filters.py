@@ -4,7 +4,7 @@ Filter helpers: parameter parsing, factory, latency estimation, and dataset filt
 This keeps filtering logic in a single file for clarity and reuse.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import mne
 import numpy as np
@@ -29,7 +29,12 @@ class Filter:
         Filter state for online filtering (initialized if online=True).
     """
 
-    def __init__(self, config: EEGConfig, online: bool = False) -> None:
+    def __init__(
+        self,
+        config: EEGConfig,
+        online: bool = False,
+        n_channels_online: Optional[int] = None,
+    ) -> None:
         """
         Initialize the Filter object.
 
@@ -43,6 +48,9 @@ class Filter:
                 - channels: list, channel names (for online mode)
         online : bool, optional
             If True, initializes filter state for online (streaming) filtering.
+        n_channels_online : int, optional
+            Number of channels for online filter state. If None, uses
+            len(config.channels) - len(config.remove_channels).
         """
         self.config = config
 
@@ -57,8 +65,10 @@ class Filter:
 
         # In online mode, maintain filter state for each channel
         if online:
-            nr_of_channels = len(self.config.channels) - len(
-                self.config.remove_channels
+            nr_of_channels = (
+                n_channels_online
+                if n_channels_online is not None
+                else len(self.config.channels) - len(self.config.remove_channels)
             )
             # zi shape: (n_sections, 2)
             self.zi: np.ndarray = scipy.signal.sosfilt_zi(self.sos)
