@@ -1,7 +1,8 @@
 """
-Online BCI with Adaptive LDA
+Online BCI with Combined Adaptive LDA
 Real-time EEG classification with online parameter adaptation
 
+Uses CombinedAdaptiveLDA (winning model: HybridLDA + Core LDA with adaptive selection)
 The key feature: Model adapts its parameters after each trial based on true labels
 """
 
@@ -36,13 +37,13 @@ except ImportError:
         print("Please install manually: pip install pylsl")
         sys.exit(1)
 
-from bci.Preprocessing.filters import Filter
+from bci.preprocessing.filters import Filter
 from bci.transfer.transfer import BCIController
 from bci.utils.bci_config import load_config
-from bci.models.adaptive_lda_modules.hybrid_lda import HybridLDA
+from bci.models.adaptive_lda_modules.combined_adaptive_lda import CombinedAdaptiveLDA
 from bci.models.adaptive_lda_modules.feature_extraction import extract_log_bandpower_features
 
-# Marker definitions (HybridLDA uses 0=rest, 1=left, 2=right)
+# Marker definitions (CombinedAdaptiveLDA uses 0=rest, 1=left, 2=right)
 markers = {
     0: "rest",
     1: "left_hand",
@@ -85,13 +86,13 @@ if __name__ == "__main__":
     # Initialize variables
     np.random.seed(config.random_state)
 
-    model_path = current_wd / "resources" / "models" / "hybrid_lda.pkl"
+    model_path = current_wd / "resources" / "models" / "combined_adaptive_lda.pkl"
     artefact_rejection_path = (
         current_wd / "resources" / "models" / "adaptivelda_artefact_removal.pkl"
     )
 
     # Load trained model
-    print(f"Loading Hybrid LDA model from: {model_path}")
+    print(f"Loading Combined Adaptive LDA model from: {model_path}")
     if not model_path.exists():
         print(f"❌ Model not found: {model_path}")
         print("Please train the model first using main_offline_AdaptiveLDA.py")
@@ -104,6 +105,7 @@ if __name__ == "__main__":
         model_sfreq = model_dict.get('sfreq', config.fs)
     
     print("✓ Model loaded successfully!")
+    print(f"  Model stats: {clf.get_stats()}")
     print(f"  Stage info: {clf.get_stage_info()}")
     print(f"  Number of features: {clf.n_features_}")
     print(f"  Model sampling frequency: {model_sfreq} Hz")
@@ -222,8 +224,9 @@ if __name__ == "__main__":
     print(f"  Sampling rate: {inlet.info().nominal_srate()} Hz")
     print(f"  Window size: {config.window_size} samples ({config.window_size/config.fs:.2f} seconds)")
     print("\n" + "="*60)
-    print("STARTING ONLINE ADAPTIVE LDA CLASSIFICATION")
+    print("STARTING ONLINE COMBINED ADAPTIVE LDA CLASSIFICATION")
     print("="*60)
+    print("Using CombinedAdaptiveLDA (HybridLDA + Core LDA with adaptive selection)")
     print("The model will adapt its parameters after each trial!")
     print("Press Ctrl+C to stop and view results")
     print("="*60 + "\n")
@@ -298,7 +301,7 @@ if __name__ == "__main__":
                             trial_features = extract_features(trial_buffer_reshaped, config.fs)  # (1, n_features)
                             
                             # Adapt model parameters based on completed trial
-                            # HybridLDA.update expects: label (0,1,2) and x_feature (1D array)
+                            # CombinedAdaptiveLDA.update expects: label (0,1,2) and x_feature (1D array)
                             clf.update(trial_true_label, trial_features[0])
                             total_adaptations += 1
                             print(f"🔄 Adapted model (Trial ended: {markers.get(trial_true_label, 'unknown')} → {markers.get(crt_label, 'unknown')})")
@@ -322,7 +325,7 @@ if __name__ == "__main__":
                 # Reshape for feature extraction: (1, n_channels, n_samples)
                 filtered_data_reshaped = buffer[np.newaxis, :, :]
 
-                # Extract features (HybridLDA expects features, not raw data)
+                # Extract features (CombinedAdaptiveLDA expects features, not raw data)
                 features = extract_features(filtered_data_reshaped, config.fs)  # Shape: (1, n_features)
 
                 # Classify using extracted features
@@ -435,7 +438,7 @@ if __name__ == "__main__":
                         plt.ylim([0, 1.0])
 
                     plt.tight_layout()
-                    plot_path = current_wd / "adaptive_lda_online_accuracy.png"
+                    plot_path = current_wd / "combined_adaptive_lda_online_accuracy.png"
                     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
                     print(f"\n✓ Accuracy plot saved: {plot_path}")
                     plt.close()
