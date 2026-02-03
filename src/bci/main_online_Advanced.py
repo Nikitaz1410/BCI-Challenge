@@ -231,6 +231,7 @@ class BCIEngine:
 
                 # --- 2. Preprocessing ---
                 eeg_np = np.array(chunk).T[self.keep_mask]
+                eeg_np = eeg_np * 1e-6  # Convert µV to V (multiply by 10^-6)
                 filtered_chunk = self.signal_filter.apply_filter_online(eeg_np)
 
                 self.buffer = self._update_buffer(self.buffer, filtered_chunk)

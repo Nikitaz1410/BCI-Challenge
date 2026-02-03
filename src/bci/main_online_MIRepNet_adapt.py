@@ -149,7 +149,7 @@ class MIRepNetBCIEngine:
         logger.info(f"Model configuration: {self.clf._n_classes} classes")
 
         # Initialize online EA adaptation (continuous domain adaptation)
-        self.clf.init_online_ea(alpha=0.1, min_samples=30)
+        self.clf.init_online_ea(alpha=0.1, min_samples=50)
         logger.info("Online EA adaptation enabled (alpha=0.1, min_samples=30)")
 
         # Artifact Rejection (thresholds trained in main_offline_MIRepNet_ar.py)
@@ -306,6 +306,8 @@ class MIRepNetBCIEngine:
                 # --- 2. Preprocessing ---
                 # Transpose to (channels, samples) and select channels
                 eeg_np = np.array(chunk).T[self.keep_mask]
+                # Scale from microVolts (µV) to Volts (V) - classifier trained on V
+                eeg_np = eeg_np * 1e-6  # Convert µV to V (multiply by 10^-6)
                 filtered_chunk = self.signal_filter.apply_filter_online(eeg_np)
 
                 # Update sliding window buffer

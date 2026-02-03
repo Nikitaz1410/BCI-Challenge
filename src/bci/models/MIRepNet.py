@@ -193,10 +193,18 @@ def EA(x: np.ndarray, refEA: Optional[np.ndarray] = None) -> tuple[np.ndarray, n
     if refEA is None:
         refEA = np.mean(cov, 0)
     
-    # Small regularization for numerical stability (avoid singular/near-singular matrices)
-    eps = 1e-6
+    # Ensure symmetry (numerical errors can make it slightly asymmetric)
+    refEA = (refEA + refEA.T) / 2
+    
+    # Regularization for numerical stability (avoid singular/near-singular matrices)
+    # Use larger epsilon to ensure positive definiteness
+    eps = 1e-5
     refEA_reg = refEA + eps * np.eye(refEA.shape[0], dtype=refEA.dtype)
+    
+    # Compute fractional matrix power and take real part (handles numerical issues)
     sqrtRefEA = fractional_matrix_power(refEA_reg, -0.5)
+    sqrtRefEA = np.real(sqrtRefEA)  # Ensure real-valued result
+    
     XEA = np.zeros(x.shape)
     for i in range(x.shape[0]):
         XEA[i] = np.dot(sqrtRefEA, x[i])
