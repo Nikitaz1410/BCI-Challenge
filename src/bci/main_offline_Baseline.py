@@ -48,7 +48,7 @@ import pandas as pd
 from sklearn.model_selection import GroupKFold
 
 # Evaluation
-from bci.Evaluation.metrics import MetricsTable, compile_metrics
+from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
 from bci.loading.loading import (
@@ -58,9 +58,9 @@ from bci.loading.loading import (
 )
 
 # Preprocessing
-from bci.Preprocessing.artefact_removal import ArtefactRemoval
-from bci.Preprocessing.filters import Filter
-from bci.Preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
+from bci.preprocessing.artefact_removal import ArtefactRemoval
+from bci.preprocessing.filters import Filter
+from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
 
 # Models - HybridLDA wrapper for testing different features
 from bci.models.adaptive_lda_modules.hybrid_lda_wrapper import HybridLDAWrapper
