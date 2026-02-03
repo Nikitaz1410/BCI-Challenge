@@ -63,7 +63,7 @@ from bci.Preprocessing.filters import Filter
 from bci.Preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
 
 # Models - HybridLDA wrapper for testing different features
-from bci.models.AdaptiveLDA_modules.hybrid_lda_wrapper import HybridLDAWrapper
+from bci.models.adaptive_lda_modules.hybrid_lda_wrapper import HybridLDAWrapper
 
 # Utils
 from bci.utils.bci_config import load_config

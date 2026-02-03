@@ -25,9 +25,9 @@ Parameters are read from bci_config.yaml:
 import pickle
 import numpy as np
 
-from .AdaptiveLDA_modules.feature_extraction import extract_psd_features
-from .AdaptiveLDA_modules.lda_core import LDACore
-from .AdaptiveLDA_modules.adaptive_update import (
+from .adaptive_lda_modules.feature_extraction import extract_psd_features
+from .adaptive_lda_modules.lda_core import LDACore
+from .adaptive_lda_modules.adaptive_update import (
     update_mean,
     update_covariance_inv_woodbury
 )
