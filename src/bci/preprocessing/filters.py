@@ -155,6 +155,24 @@ class Filter:
         # Average latency in milliseconds
         avg_latency_ms = np.mean(gd_interp) / self.config.fs * 1000
 
+        # # Plot the group delay
+        # import matplotlib.pyplot as plt
+
+        # plt.figure(figsize=(10, 6))
+        # plt.plot(freqs, gd_interp, label="Group Delay")
+        # plt.axvline(
+        #     x=self.config.frequencies[0], color="r", linestyle="--", label="Low Cutoff"
+        # )
+        # plt.axvline(
+        #     x=self.config.frequencies[1], color="g", linestyle="--", label="High Cutoff"
+        # )
+        # plt.xlabel("Frequency (Hz)")
+        # plt.ylabel("Group Delay (samples)")
+        # plt.title("Group Delay of Bandpass Filter")
+        # plt.legend()
+        # plt.grid(True)
+        # plt.show()
+
         return avg_latency_ms
 
 

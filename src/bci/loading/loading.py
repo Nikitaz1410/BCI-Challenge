@@ -62,7 +62,8 @@ warnings.filterwarnings("ignore")
 
 
 def _get_raw_xdf_offline(
-    trial: Path, marker_durations: list[float] | None = None, 
+    trial: Path,
+    marker_durations: list[float] | None = None,
 ) -> tuple[mne.io.RawArray, list, list[str]]:
     """
     Function to load the raw data from the trial and return the raw data object,
@@ -162,7 +163,6 @@ def _get_raw_xdf_offline(
             print(f"Unknown stream found: {name}")
             event_channel = i  # markers stream
 
-
     # Validate channel information:
     if streams[eeg_channel]["info"]["desc"] != [None]:
         print("Channel info found in the recording.")
@@ -178,7 +178,6 @@ def _get_raw_xdf_offline(
             # Channel info exists but doesn't match - filter out this recording
             print("Channels do not match standard 10-20 montage.")
             channel_labels = eeg_channels
-
 
         if len(eeg_channels) == 24:
             print(
@@ -201,11 +200,9 @@ def _get_raw_xdf_offline(
             channel_labels = standard_channels
 
         if "P124" in trial.name:
-            print(
-                "P124 recording detected. Recording empty, discarding..."
-            )
+            print("P124 recording detected. Recording empty, discarding...")
             return None, None, None
-        
+
         if "P554" in trial.name:
             print(
                 "P554 recording detected. Assigning custom 16 channel labels + keyboard..."
@@ -310,8 +307,12 @@ def _get_raw_xdf_offline(
         duration_list[i] = marker_durations[i % len(marker_durations)]
 
     # Annotate the raw data with the markers (So that we know what events are happening at what time in the data)
+    # annotations = mne.Annotations(
+    #     onset=real_time_marker, duration=duration_list, description=marker
+    # )
+    #
     annotations = mne.Annotations(
-        onset=real_time_marker, duration=duration_list, description=marker
+        onset=real_time_marker, duration=3, description=marker
     )
     raw_data.set_annotations(annotations)
 
@@ -330,12 +331,12 @@ def _get_raw_xdf_offline(
 def _standardize_and_map(raw, target_event_id):
     """
     Standardizes markers with automatic detection of marker type.
-    
+
     Handles files with:
     - Only "<EVENT>" markers (e.g., "ARROW LEFT")
     - Only "<EVENT> ONSET" markers (e.g., "ARROW LEFT ONSET")
     - Both types (prefers "<EVENT>" over "<EVENT> ONSET")
-    
+
     Parameters
     ----------
     raw : mne.io.Raw
@@ -344,12 +345,12 @@ def _standardize_and_map(raw, target_event_id):
         Final event ID mapping, e.g., {"rest": 0, "left_hand": 1, "right_hand": 2}
     mode : str NOTE
         "general" or "dino" (currently unused, auto-detected)
-    
+
     Returns
     -------
     events : ndarray
         Events array with standardized event codes
-    
+
     Raises
     ------
     ValueError
@@ -362,7 +363,7 @@ def _standardize_and_map(raw, target_event_id):
         "ARROW RIGHT": "right_hand",
         "CIRCLE": "rest",
     }
-    
+
     rename_map_onset = {
         "ARROW LEFT ONSET": "left_hand",
         "ARROW RIGHT ONSET": "right_hand",
@@ -375,15 +376,21 @@ def _standardize_and_map(raw, target_event_id):
 
     existing_descriptions = {str(desc) for desc in existing_descriptions}
 
-    base_markers_present = any(k in existing_descriptions for k in rename_map_base.keys())
-    onset_markers_present = any(k in existing_descriptions for k in rename_map_onset.keys())
-    
+    base_markers_present = any(
+        k in existing_descriptions for k in rename_map_base.keys()
+    )
+    onset_markers_present = any(
+        k in existing_descriptions for k in rename_map_onset.keys()
+    )
+
     print(f"  Base markers ('<EVENT>') present: {base_markers_present}")
     print(f"  Onset markers ('<EVENT> ONSET') present: {onset_markers_present}")
-    
+
     # 4. Choose which mapping to use (priority: base > onset)
     if base_markers_present and onset_markers_present:
-        print(f"  Both marker types found! Using base markers '<EVENT>' (higher priority)")
+        print(
+            f"  Both marker types found! Using base markers '<EVENT>' (higher priority)"
+        )
         rename_map = rename_map_base
     elif base_markers_present:
         print(f"  Using base markers '<EVENT>'")
@@ -403,7 +410,7 @@ def _standardize_and_map(raw, target_event_id):
     actual_map = {k: v for k, v in rename_map.items() if k in existing_descriptions}
     print(f"  Renaming {len(actual_map)} types: {actual_map}")
     raw.annotations.rename(actual_map)
-    
+
     # print(f"Annotations after standardization: {set(raw.annotations.description)}")
 
     # 3. Force extraction of ONLY the standardized keys
@@ -416,7 +423,7 @@ def _standardize_and_map(raw, target_event_id):
             f"  Annotations after rename: {raw.annotations.description}\n"
             f"  Original error: {e}"
         )
-    
+
     if len(events) == 0:
         raise ValueError(
             f"No valid events extracted.\n"
@@ -554,7 +561,9 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
     return loaded_raws, loaded_events, event_id, subject_ids_out, raw_filenames
 
 
-def load_target_subject_data(root: Path, source_path: Path, target_path: Path, resample: float | None) -> tuple:
+def load_target_subject_data(
+    root: Path, source_path: Path, target_path: Path, resample: float | None
+) -> tuple:
     """
     Loads target data (Subject 110).
     1. Checks target_path for existing .fif files.
@@ -610,7 +619,9 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
     existing_fif = sorted(list(raw_save_dir.glob("*.fif")))
 
     if len(existing_fif) > 0:
-        print(f"Found {len(existing_fif)} processed files in target raw folder. Loading...")
+        print(
+            f"Found {len(existing_fif)} processed files in target raw folder. Loading..."
+        )
         if resample is not None:
             print(f"Resampling to {resample} Hz...")
         loaded_raws = []
@@ -674,7 +685,6 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
     else:
         pass
 
-
     all_xdf = sorted([p for p in source_path.glob("*.xdf")])
     print(f"Found {len(all_xdf)} XDF files in source folder.")
 
@@ -699,10 +709,9 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
         if raw is None:
             print("raw is None, skipping the file.")
             continue
-       
 
         montage = raw.info["chs"]
-        
+
         selected_events = _standardize_and_map(raw, target_event_id)
 
         # NOTE: consider using JUMP and JUMP FAIL as evaluation of how user performs?
@@ -710,7 +719,7 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
         selected_event_id.update(target_event_id)
 
         # Save files
-        base_name = file_path.stem 
+        base_name = file_path.stem
         raw.info["subject_info"] = {"id": 110}
         raw.save(raw_save_dir / f"{base_name}_raw.fif", overwrite=True)
         np.save(event_save_dir / f"{base_name}_events.npy", selected_events)
@@ -724,10 +733,7 @@ def load_target_subject_data(root: Path, source_path: Path, target_path: Path, r
     with open(event_id_path, "w") as f:
         json.dump(selected_event_id, f, indent=2)
 
-    loaded_meta = {
-        "filenames": raw_filenames,
-        "channel_names": channel_names
-    }
+    loaded_meta = {"filenames": raw_filenames, "channel_names": channel_names}
 
     with open(target_path / "metadata.json", "w") as f:
         json.dump(loaded_meta, f, indent=2)
@@ -798,25 +804,35 @@ def create_subject_train_set(
     The function randomly selects the specified number of files from each category
     to form the training dataset if shuffle is True.
 
-    Total number of GENERAL files available: 
-    Total number of DINO files available: 
-    Total number of SUPRESSION files available: 
+    Total number of GENERAL files available:
+    Total number of DINO files available:
+    Total number of SUPRESSION files available:
 
     """
     np.random.seed(config.random_state)
 
     # Categorize files by type
-    general_indices = [i for i, fname in enumerate(all_filenames) if ("dino" not in fname.lower() and "s001" not in fname.lower()
-                                                                      and "supression" not in fname.lower())]
+    general_indices = [
+        i
+        for i, fname in enumerate(all_filenames)
+        if (
+            "dino" not in fname.lower()
+            and "s001" not in fname.lower()
+            and "supression" not in fname.lower()
+        )
+    ]
     print(f"Total number of GENERAL files available: {len(general_indices)}")
     dino_indices = [
         i
         for i, fname in enumerate(all_filenames)
-        if ("dino" in fname.lower() or "s001" in fname.lower()) and "supression" not in fname.lower()
+        if ("dino" in fname.lower() or "s001" in fname.lower())
+        and "supression" not in fname.lower()
     ]
     print(f"Total number of DINO files available: {len(dino_indices)}")
 
-    supression_indices = [i for i, fname in enumerate(all_filenames) if "supression" in fname.lower()]     # one file only
+    supression_indices = [
+        i for i, fname in enumerate(all_filenames) if "supression" in fname.lower()
+    ]  # one file only
     print(f"Total number of SUPRESSION files available: {len(supression_indices)}")
 
     # Randomly shuffle
@@ -853,9 +869,7 @@ def create_subject_train_set(
     print(f"\n=== Training Dataset, Target Subject ===")
     print(f"Selected {len(train_indices)} files:")
     print(f"  - General: {len(general_indices[:num_general])}")
-    print(
-        f"  - Dino: {len(dino_indices[:num_dino])}"
-    )
+    print(f"  - Dino: {len(dino_indices[:num_dino])}")
     print(f"  - Supression: {len(supression_indices[:num_supression])}")
 
     # Build training set
@@ -922,9 +936,9 @@ def create_subject_test_set(
 
     Notes
     -----
-        Total number of GENERAL files available: 
-        Total number of DINO files available: 
-        Total number of SUPRESSION files available: 
+        Total number of GENERAL files available:
+        Total number of DINO files available:
+        Total number of SUPRESSION files available:
     """
     np.random.seed(config.random_state)
 
@@ -933,14 +947,26 @@ def create_subject_test_set(
         i for i in range(len(all_filenames)) if i not in exclude_indices
     ]
 
-    general_available = [i for i in available_indices if ("dino" not in all_filenames[i].lower()
-                         and "s001" not in all_filenames[i].lower() and "supression" not in all_filenames[i].lower())]
+    general_available = [
+        i
+        for i in available_indices
+        if (
+            "dino" not in all_filenames[i].lower()
+            and "s001" not in all_filenames[i].lower()
+            and "supression" not in all_filenames[i].lower()
+        )
+    ]
     dino_available = [
         i
         for i in available_indices
-        if (("dino" in all_filenames[i].lower() or "s001" in all_filenames[i].lower()) and "supression" not in all_filenames[i].lower())
+        if (
+            ("dino" in all_filenames[i].lower() or "s001" in all_filenames[i].lower())
+            and "supression" not in all_filenames[i].lower()
+        )
     ]
-    supression_available = [i for i in available_indices if "supression" in all_filenames[i].lower()]   # one file only
+    supression_available = [
+        i for i in available_indices if "supression" in all_filenames[i].lower()
+    ]  # one file only
 
     # Check if enough files are available
     if len(general_available) < num_general:
@@ -956,7 +982,7 @@ def create_subject_test_set(
     if len(supression_available) < num_supression:
         raise ValueError(
             f"Not enough supression files available for testing. "
-            f"Available: {len(supression_available)}, Requested: {num_supression}" 
+            f"Available: {len(supression_available)}, Requested: {num_supression}"
         )
 
     # Shuffle and select exact number
@@ -986,15 +1012,11 @@ def create_subject_test_set(
     test_sub_ids = [110] * len(test_raws)  # All from subject 110
 
     print(f"Test files: {test_filenames}")
-    
-    return (
-        test_raws,
-        test_events,
-        test_filenames,
-        test_sub_ids
-    )
 
-# TODO: delete in final version 
+    return (test_raws, test_events, test_filenames, test_sub_ids)
+
+
+# TODO: delete in final version
 # def load_cho2017_data(subjects: list[int], root: Path, channels: list[str]) -> tuple:
 #     """Load Physionet Motor Imagery data for specified subjects.
 
@@ -1059,7 +1081,7 @@ def create_subject_test_set(
 
 #         print("Processing and saving Cho2017 data to disk...")
 #         # print("Keeping all 64 channels for now...")
-        
+
 #         subject_rows = []
 
 #         for sub_id in target_subjects:
@@ -1072,7 +1094,7 @@ def create_subject_test_set(
 #                     raw_list.append(raw_dict[sub_id][session][run])
 
 #             raw_sub = mne.concatenate_raws(raw_list)
-            
+
 #             if channels is not None:
 #                 raw_sub.pick(channels)
 #                 raw_sub.reorder_channels(channels)
@@ -1106,7 +1128,7 @@ def create_subject_test_set(
 #             )
 
 #         pd.DataFrame(subject_rows).to_csv(subjects_csv, index=False)
-    
+
 #     #raise KeyboardInterrupt("Need to specify target subjects for Cho2017 dataset.")
 
 #     # 2. LOAD DATA FROM DISK
@@ -1145,7 +1167,6 @@ def create_subject_test_set(
 # # )
 
 
-
 # def create_cho_epochs(filtered_raw, events, sub_id, filename, original_event_id, target_event_id):
 
 #     # complete_epochs = []
@@ -1173,16 +1194,16 @@ def create_subject_test_set(
 #     # 2. Create REST epochs from pre-trial period
 #     # We'll create synthetic "rest" events BEFORE each MI event
 #     rest_events = events.copy()
-    
+
 #     # Shift events backward by 4 seconds (so rest ends where MI begins)
 #     # This ensures rest epochs are [-3.5, 0.5]s relative to MI onset
 #     # But we'll extract [0.5, 4.0]s from these shifted events
 #     rest_events[:, 0] = rest_events[:, 0] - int(4.0 * filtered_raw.info['sfreq'])
 #     rest_events[:, 2] = 0  # Label all as "rest"
-    
+
 #     # Filter out events that would go before recording start
 #     valid_rest_events = rest_events[rest_events[:, 0] >= int(0.5 * filtered_raw.info['sfreq'])]
-    
+
 #     rest_epochs = mne.Epochs(
 #         filtered_raw,
 #         valid_rest_events,
@@ -1192,12 +1213,12 @@ def create_subject_test_set(
 #         preload=True,
 #         baseline=None,
 #     )
-    
+
 #     print(f"Rest epochs shape: {rest_epochs.get_data().shape}")
 
 
 #     # TODO: Normalize the data
-     
+
 #     rest_epochs.event_id = {'rest': 0}
 #     # Attach metadata
 #     rest_metadata = pd.DataFrame(
@@ -1223,23 +1244,22 @@ def create_subject_test_set(
 #     return complete_epochs
 
 
-
 def validate_train_test_split(train_filenames: list, test_filenames: list) -> None:
     """
     Validates that training and testing datasets have no overlapping files.
-    
+
     Parameters
     ----------
     train_filenames : list
         List of filenames used for training
     test_filenames : list
         List of filenames used for testing
-    
+
     Raises
     ------
     ValueError
         If any files appear in both training and testing sets
-    
+
     Notes
     -----
     Also prints summary statistics about the split.
@@ -1247,26 +1267,26 @@ def validate_train_test_split(train_filenames: list, test_filenames: list) -> No
     print("\n" + "=" * 80)
     print("VALIDATING TRAIN/TEST SPLIT")
     print("=" * 80)
-    
+
     # Convert to sets for efficient intersection
     train_set = set(train_filenames)
     test_set = set(test_filenames)
-    
+
     # Check for overlaps
     overlap = train_set & test_set
-    
+
     if overlap:
         print("❌ ERROR: Found overlapping files between train and test sets!")
         print(f"\nNumber of overlapping files: {len(overlap)}")
         print("\nOverlapping files:")
         for fname in sorted(overlap):
             print(f"  - {fname}")
-        
+
         raise ValueError(
             f"Data leakage detected! {len(overlap)} file(s) appear in both "
             f"training and testing sets. This will invalidate your results."
         )
-    
+
     # Print summary
     print("✅ No overlap detected between train and test sets")
     print(f"\nDataset Statistics:")
@@ -1274,39 +1294,61 @@ def validate_train_test_split(train_filenames: list, test_filenames: list) -> No
     print(f"  Testing files:    {len(test_filenames)}")
     print(f"  Total unique:     {len(train_set | test_set)}")
     print(f"  Expected total:   {len(train_filenames) + len(test_filenames)}")
-    
+
     # Categorize by type
     train_categories = {
-        "general": [f for f in train_filenames 
-                   if "dino" not in f.lower() and "s001" not in f.lower() and "supression" not in f.lower()],
-        "dino": [f for f in train_filenames 
-                if ("dino" in f.lower() or "s001" in f.lower()) and "supression" not in f.lower()],
+        "general": [
+            f
+            for f in train_filenames
+            if "dino" not in f.lower()
+            and "s001" not in f.lower()
+            and "supression" not in f.lower()
+        ],
+        "dino": [
+            f
+            for f in train_filenames
+            if ("dino" in f.lower() or "s001" in f.lower())
+            and "supression" not in f.lower()
+        ],
         "supression": [f for f in train_filenames if "supression" in f.lower()],
     }
-    
+
     test_categories = {
-        "general": [f for f in test_filenames 
-                   if "dino" not in f.lower() and "s001" not in f.lower() and "supression" not in f.lower()],
-        "dino": [f for f in test_filenames 
-                if ("dino" in f.lower() or "s001" in f.lower()) and "supression" not in f.lower()],
+        "general": [
+            f
+            for f in test_filenames
+            if "dino" not in f.lower()
+            and "s001" not in f.lower()
+            and "supression" not in f.lower()
+        ],
+        "dino": [
+            f
+            for f in test_filenames
+            if ("dino" in f.lower() or "s001" in f.lower())
+            and "supression" not in f.lower()
+        ],
         "supression": [f for f in test_filenames if "supression" in f.lower()],
     }
-    
+
     print(f"\nTraining Set Composition:")
     print(f"  General:     {len(train_categories['general'])}")
     print(f"  Dino:        {len(train_categories['dino'])}")
     print(f"  Supression:  {len(train_categories['supression'])}")
-    
+
     print(f"\nTesting Set Composition:")
     print(f"  General:     {len(test_categories['general'])}")
     print(f"  Dino:        {len(test_categories['dino'])}")
     print(f"  Supression:  {len(test_categories['supression'])}")
-    
+
     # Warn about small test sets
     if len(test_filenames) < 2:
-        print("\n⚠️ WARNING: Test set has fewer than 2 files. Results may not be reliable.")
-    
+        print(
+            "\n⚠️ WARNING: Test set has fewer than 2 files. Results may not be reliable."
+        )
+
     if len(train_filenames) < 3:
-        print("\n⚠️ WARNING: Train set has fewer than 3 files. Model may not generalize well.")
-    
+        print(
+            "\n⚠️ WARNING: Train set has fewer than 3 files. Model may not generalize well."
+        )
+
     print("=" * 80 + "\n")

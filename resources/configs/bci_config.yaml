@@ -50,7 +50,7 @@ target: "sub" # Folder name with all target subject data
 # Online
 online: "dino" # Options: dino (Needs an active eeg stream), prerecorded (for testing)
 replay_subject_id: "Dino-6" # Options: Phy-### (for Physionet data), Dino-## (Plays one dino game from Fina)
-ip: "10.141.115.246" # IP address for UDP communication to the dino game
+ip: "127.0.0.1" # IP address for UDP communication to the dino game
 port: 5005 # Port for the UDP communication to the dino game
 classification_threshold: 0.6 # Value between 0 and 1 to determine the confidence threshold for classification
 classification_buffer: 10 # Number of classifications to be buffered for majority voting
