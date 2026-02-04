@@ -17,12 +17,10 @@ Pipeline:
 Supported model architectures (from Advanced_Baselines.py):
 - EEGNet
 - FBCNet
-- FBCNet_2
 - Conformer
 - DeepConvNet
 - ShallowConvNet
 - ADFCNN
-- EDPNet
 - IFNet
 
 Usage:
@@ -172,19 +170,6 @@ MODEL_CONFIGURATIONS: List[Dict[str, Any]] = [
             "learning_rate": 5e-4,
         },
     },
-    # EDPNet - Efficient Dual-Prototype Network
-    {
-        "name": "EDPNet",
-        "model_type": "edpnet",
-        "hyperparams": {
-            **DEFAULT_DL_HYPERPARAMS,
-            "learning_rate": 5e-4,
-        },
-        "model_config": {
-            "edpnet_time_kernel1": 50,  # Reduced for 250-sample inputs
-            "edpnet_pool_kernels": [25, 50, 100],  # Smaller kernels for smaller inputs
-        },
-    },
     # IFNet - Inter-Frequency Network
     {
         "name": "IFNet",
@@ -199,20 +184,6 @@ MODEL_CONFIGURATIONS: List[Dict[str, Any]] = [
     {
         "name": "FBCNet",
         "model_type": "fbcnet",
-        "hyperparams": {
-            **DEFAULT_DL_HYPERPARAMS,
-            "learning_rate": 5e-4,
-        },
-        "model_config": {
-            "fbcnet_n_bands": 9,
-            "fbcnet_m": 32,
-            "fbcnet_stride_factor": 5,  # 250/5=50 (must divide n_samples)
-        },
-    },
-    # FBCNet_2 - Alternative FBCNet implementation
-    {
-        "name": "FBCNet_2",
-        "model_type": "fbcnet_2",
         "hyperparams": {
             **DEFAULT_DL_HYPERPARAMS,
             "learning_rate": 5e-4,

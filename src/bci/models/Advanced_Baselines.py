@@ -11,13 +11,12 @@ all exposing a unified API:
 
 Supported models (from MIRepNet/model):
 - EEGNet
-- FBCNet
+- FBCNet (standardized implementation)
 - IFNet
 - Conformer
 - DeepConvNet
 - ShallowConvNet
 - ADFCNN (Net)
-- EDPNet
 """
 
 from __future__ import annotations
@@ -39,13 +38,12 @@ from bci.utils.bci_config import load_config
 
 # Import all model architectures
 from bci.models.MIRepNet.model.EEGNet import EEGNet
-from bci.models.MIRepNet.model.FBCNet import FBCNet, FBCNet_2
+from bci.models.MIRepNet.model.FBCNet import FBCNet
 from bci.models.MIRepNet.model.IFNet import IFNet
 from bci.models.MIRepNet.model.Conformer import Conformer
 from bci.models.MIRepNet.model.Deep_Shallow_Conv import DeepConvNet as _OrigDeepConvNet
 from bci.models.MIRepNet.model.Deep_Shallow_Conv import ShallowConvNet as _OrigShallowConvNet
 from bci.models.MIRepNet.model.ADFCNN import ADFCNN as _OrigADFCNN
-from bci.models.MIRepNet.model.EDPNet import EDPNet
 
 
 # ---------------------------------------------------------------------------
@@ -379,9 +377,7 @@ def _extract_classification_output(
     Extract classification logits from model forward output.
     
     Model return signatures (verified against MIRepNet/model):
-    - EEGNet, DeepConvNet, ShallowConvNet, EDPNet, FBCNet_2: single tensor (logits)
-    - FBCNet, ADFCNN: single tensor (log-probabilities via LogSoftmax)
-    - Conformer, IFNet: single tensor (logits)
+    - All models: single tensor (logits)
     """
     if isinstance(outputs, tuple):
         return outputs[-1]
@@ -389,7 +385,8 @@ def _extract_classification_output(
 
 
 # Models that output log-probabilities (LogSoftmax) instead of logits
-_MODELS_WITH_LOG_PROBS = frozenset({"fbcnet", "adfcnn"})
+# Note: All models now output logits (use CrossEntropyLoss)
+_MODELS_WITH_LOG_PROBS = frozenset()
 
 
 def _prepare_input_tensor(
@@ -407,9 +404,8 @@ def _prepare_input_tensor(
     
     Different models expect different input shapes:
     - EEGNet, DeepConvNet, ShallowConvNet, ADFCNN: (N, 1, C, T)
-    - Conformer, EDPNet: (N, C, T) - Conformer/EDPNet unsqueeze internally
+    - Conformer: (N, C, T) - Conformer unsqueezes internally
     - FBCNet: (N, nBands, C, T) - filter bank applied
-    - FBCNet_2: same as FBCNet
     - IFNet: (N, C*radix, T) - channels replicated by radix
     """
     x = torch.from_numpy(signals.astype(np.float32)).to(device)
@@ -420,7 +416,7 @@ def _prepare_input_tensor(
             x = x.unsqueeze(1)  # (N, C, T) -> (N, 1, C, T)
     
     # FBCNet expects (N, nBands, C, T) - apply filter bank
-    elif model_type in ("fbcnet", "fbcnet_2"):
+    elif model_type == "fbcnet":
         sig_np = signals if isinstance(signals, np.ndarray) else signals.cpu().numpy()
         filtered = _apply_filter_bank(sig_np, n_bands=n_bands, sfreq=sfreq)
         x = torch.from_numpy(filtered).float().to(device)
@@ -430,8 +426,8 @@ def _prepare_input_tensor(
         if x.ndim == 3:
             x = x.repeat(1, radix, 1)  # (N, C, T) -> (N, C*radix, T)
     
-    # Conformer, EDPNet: (N, C, T) - models unsqueeze/expect as-is
-    elif model_type in ("conformer", "edpnet"):
+    # Conformer: (N, C, T) - model unsqueezes/expect as-is
+    elif model_type in ("conformer",):
         pass  # Already (N, C, T)
     
     return x
@@ -442,8 +438,8 @@ def _prepare_input_tensor(
 # ---------------------------------------------------------------------------
 
 ModelType = Literal[
-    "eegnet", "fbcnet", "fbcnet_2", "ifnet", "conformer",
-    "deepconvnet", "shallowconvnet", "adfcnn", "edpnet"
+    "eegnet", "fbcnet", "ifnet", "conformer",
+    "deepconvnet", "shallowconvnet", "adfcnn"
 ]
 
 
@@ -483,12 +479,6 @@ class ModelConfig:
     conv_temporal_kernel_times: int = 1
     conv_bn_track: bool = True
     
-    # EDPNet specific
-    edpnet_f1: int = 9
-    edpnet_f2: int = 48
-    edpnet_time_kernel1: int = 50  # Reduced for smaller inputs
-    edpnet_pool_kernels: List[int] = field(default_factory=lambda: [25, 50, 100])  # Smaller kernels
-    
 def _create_model(
     model_type: ModelType,
     config: ModelConfig,
@@ -512,19 +502,8 @@ def _create_model(
         )
     
     elif model_type == "fbcnet":
-        return FBCNet(
-            nChan=config.n_channels,
-            nTime=config.n_samples,
-            nClass=config.n_classes,
-            nBands=config.fbcnet_n_bands,
-            m=config.fbcnet_m,
-            strideFactor=config.fbcnet_stride_factor,
-            doWeightNorm=True,
-        )
-    
-    elif model_type == "fbcnet_2":
         input_shape = (1, config.fbcnet_n_bands, config.n_channels, config.n_samples)
-        return FBCNet_2(
+        return FBCNet(
             n_classes=config.n_classes,
             input_shape=input_shape,
             m=config.fbcnet_m,
@@ -577,22 +556,11 @@ def _create_model(
             sampling_rate=int(config.sampling_rate),
         )
     
-    elif model_type == "edpnet":
-        return EDPNet(
-            chans=config.n_channels,
-            samples=config.n_samples,
-            num_classes=config.n_classes,
-            F1=config.edpnet_f1,
-            F2=config.edpnet_f2,
-            time_kernel1=config.edpnet_time_kernel1,
-            pool_kernels=config.edpnet_pool_kernels,
-        )
-    
     else:
         raise ValueError(
             f"Unsupported model_type '{model_type}'. "
-            f"Expected one of: eegnet, fbcnet, fbcnet_2, ifnet, conformer, "
-            f"deepconvnet, shallowconvnet, adfcnn, edpnet"
+            f"Expected one of: eegnet, fbcnet, ifnet, conformer, "
+            f"deepconvnet, shallowconvnet, adfcnn"
         )
 
 
@@ -613,13 +581,11 @@ class DeepBCIModel:
         Type of model to use. One of:
         - 'eegnet': EEGNet architecture
         - 'fbcnet': Filter Bank Common Spatial Pattern Network
-        - 'fbcnet_2': Alternative FBCNet implementation
         - 'ifnet': Inter-Frequency Network
         - 'conformer': Conformer (CNN + Transformer)
         - 'deepconvnet': Deep Convolutional Network
         - 'shallowconvnet': Shallow Convolutional Network
         - 'adfcnn': Adaptive Dual-Flow CNN
-        - 'edpnet': Efficient Dual-Prototype Network
     
     n_classes : int
         Number of output classes.
@@ -756,8 +722,7 @@ class DeepBCIModel:
         """
         Get the appropriate loss function.
         
-        FBCNet and ADFCNN output log-probabilities (LogSoftmax), so use NLLLoss.
-        All other models output logits, so use CrossEntropyLoss.
+        All models output logits, so use CrossEntropyLoss.
         """
         if self.class_weights is not None:
             weights = torch.from_numpy(self.class_weights.astype(np.float32)).to(self._device)
@@ -1051,7 +1016,7 @@ class DeepBCIModel:
                 outputs = self._model(batch_X)
                 outputs = _extract_classification_output(outputs, self.model_type)
                 
-                # FBCNet and ADFCNN output log-probabilities; others output logits
+                # All models output logits
                 if self.model_type in _MODELS_WITH_LOG_PROBS:
                     proba = torch.exp(outputs)
                 else:
@@ -1243,22 +1208,6 @@ def create_shallowconvnet(
     """Create a ShallowConvNet model wrapper."""
     return DeepBCIModel(
         model_type="shallowconvnet",
-        n_classes=n_classes,
-        n_channels=n_channels,
-        n_samples=n_samples,
-        **kwargs,
-    )
-
-
-def create_edpnet(
-    n_classes: int = 3,
-    n_channels: int = 22,
-    n_samples: int = 250,
-    **kwargs,
-) -> DeepBCIModel:
-    """Create an EDPNet model wrapper."""
-    return DeepBCIModel(
-        model_type="edpnet",
         n_classes=n_classes,
         n_channels=n_channels,
         n_samples=n_samples,

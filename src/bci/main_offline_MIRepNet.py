@@ -25,6 +25,7 @@ Usage:
     python main_offline_MIRepNet.py
 """
 
+import pickle
 import random
 import re
 import sys
@@ -180,7 +181,7 @@ def run_cv_for_config(
     n_classes: int,
     channel_names: List[str],
     n_folds: int = 5,
-    use_artifact_rejection: bool = False,
+    use_artifact_rejection: bool = True,
 ) -> Dict[str, Any]:
     """
     Run cross-validation for a single MIRepNet model configuration.
@@ -206,7 +207,7 @@ def run_cv_for_config(
     n_folds : int
         Number of CV folds
     use_artifact_rejection : bool
-        Whether to apply artifact rejection (default False for deep learning)
+        Whether to apply artifact rejection (default True for this _ar version)
 
     Returns
     -------
@@ -344,7 +345,7 @@ def run_cv_for_config(
 
 def run_mirepnet_comparison_pipeline(
     configurations: Optional[List[Dict[str, Any]]] = None,
-    use_artifact_rejection: bool = False,
+    use_artifact_rejection: bool = True,
 ):
     """
     Main pipeline that compares multiple MIRepNet configurations using
@@ -355,7 +356,7 @@ def run_mirepnet_comparison_pipeline(
     configurations : list, optional
         List of model configurations to evaluate. If None, uses MODEL_CONFIGURATIONS.
     use_artifact_rejection : bool
-        Whether to apply artifact rejection (default False for deep learning)
+        Whether to apply artifact rejection (default True for this _ar version)
     """
     # Use default configurations if none provided
     if configurations is None:
@@ -597,29 +598,53 @@ def run_mirepnet_comparison_pipeline(
             step_size=config.step_size,
         )
 
-        print(f"Training on {len(X_train_windows)} windows...")
+        # Apply artifact removal to final training data (thresholds from train only, no leakage)
+        ar = None
+        if use_artifact_rejection:
+            ar = ArtefactRemoval()
+            ar.get_rejection_thresholds(X_train_windows, config)
+            X_train_clean, y_train_clean = ar.reject_bad_epochs(
+                X_train_windows, y_train_windows
+            )
+            if len(X_train_clean) == 0:
+                print("Warning: No data left after artifact rejection. Skipping final model save.")
+                X_train_windows = np.empty((0,) + X_train_windows.shape[1:])
+                y_train_windows = np.array([])
+            else:
+                X_train_windows, y_train_windows = X_train_clean, y_train_clean
+                print(f"Training on {len(X_train_windows)} windows (after artifact rejection)...")
+        else:
+            print(f"Training on {len(X_train_windows)} windows...")
 
-        final_clf = choose_model(
-            "mirepnet",
-            {
-                "batch_size": best_config["batch_size"],
-                "epochs": best_config["epochs"],
-                "lr": best_config["lr"],
-                "optimizer": best_config["optimizer"],
-                "scheduler": best_config["scheduler"],
-                "actual_channels": channel_names_after_preprocessing,
-                "random_state": config.random_state + 9999,
-            },
-        )
+        if len(X_train_windows) > 0:
+            final_clf = choose_model(
+                "mirepnet",
+                {
+                    "batch_size": best_config["batch_size"],
+                    "epochs": best_config["epochs"],
+                    "lr": best_config["lr"],
+                    "optimizer": best_config["optimizer"],
+                    "scheduler": best_config["scheduler"],
+                    "actual_channels": channel_names_after_preprocessing,
+                    "random_state": config.random_state + 9999,
+                },
+            )
 
-        final_clf.fit(X_train_windows, y_train_windows)
+            final_clf.fit(X_train_windows, y_train_windows)
 
-        # Save the best model
-        model_dir = current_wd / "resources" / "models"
-        model_dir.mkdir(parents=True, exist_ok=True)
-        model_path = model_dir / "mirepnet_best_model.pt"
-        final_clf.save(str(model_path))
-        print(f"Best model saved to: {model_path}")
+            # Save the best model
+            model_dir = current_wd / "resources" / "models"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            model_path = model_dir / "mirepnet_ar_best_model.pt"
+            final_clf.save(str(model_path))
+            print(f"Best model saved to: {model_path}")
+
+            # Save ArtefactRemoval for online validation/testing (same thresholds used at train time)
+            if use_artifact_rejection and ar is not None:
+                artefact_path = model_dir / "mirepnet_artefact_removal.pkl"
+                with open(artefact_path, "wb") as f:
+                    pickle.dump(ar, f)
+                print(f"ArtefactRemoval saved to: {artefact_path}")
 
     return all_results, df_results
 
@@ -630,7 +655,7 @@ def run_single_mirepnet_config(
     lr: float = 0.001,
     optimizer: str = "adam",
     scheduler: str = "cosine",
-    use_artifact_rejection: bool = False,
+    use_artifact_rejection: bool = True,
 ):
     """
     Run training and evaluation for a single MIRepNet configuration.
@@ -651,7 +676,7 @@ def run_single_mirepnet_config(
     scheduler : str
         Learning rate scheduler: 'cosine', 'step', or 'none' (default: 'cosine')
     use_artifact_rejection : bool
-        Whether to apply artifact rejection (default False for deep learning)
+        Whether to apply artifact rejection (default True for this _ar version)
     """
     single_config = [
         {

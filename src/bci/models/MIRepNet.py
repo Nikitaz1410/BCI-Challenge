@@ -18,6 +18,7 @@ the model and how we serialise it.
 from __future__ import annotations
 
 import os
+import pickle
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -388,9 +389,10 @@ class MIRepNetModel:
         self,
         alpha: float = 0.1,
         min_samples: int = 20,
+        saved_path: Optional[str] = None,
     ) -> None:
         """
-        Initialize online EA adaptation from stored training reference.
+        Initialize online EA adaptation from stored training reference or saved state.
 
         Call this before starting online inference to enable continuous
         adaptation of the Euclidean Alignment reference.
@@ -404,12 +406,21 @@ class MIRepNetModel:
             Minimum number of samples before EMA adaptation starts.
             Until then, covariances are accumulated and averaged.
             Default: 20.
+        saved_path : str, optional
+            Path to a previously saved online EA state. If the file exists, the
+            adapted EA reference from the last run is loaded for warm start.
         """
         self._online_ea_alpha = alpha
         self._online_ea_min_samples = min_samples
         self._online_ea_n_samples = 0
 
-        # Initialize from stored training reference (pipeline assumes same subject)
+        # Try to load saved adapted EA from previous session (same subject)
+        if saved_path and os.path.isfile(saved_path):
+            loaded = self.load_online_ea(saved_path)
+            if loaded:
+                return
+
+        # Fallback: initialize from stored training reference
         if self._ea_ref_by_subject and len(self._ea_ref_by_subject) > 0:
             first_ref = next(iter(self._ea_ref_by_subject.values()))
             self._online_ea_ref = first_ref.copy()
@@ -417,6 +428,68 @@ class MIRepNetModel:
         else:
             self._online_ea_ref = None
             print("Online EA will be computed from incoming data (no training reference)")
+
+    def save_online_ea(self, path: str) -> bool:
+        """
+        Save the current online EA adaptation state for warm start on next run.
+
+        Saves the adapted EA reference and sample count so the same subject
+        can resume from the last session without resetting adaptation.
+
+        Parameters
+        ----------
+        path : str
+            File path to save the state (e.g. .pkl).
+
+        Returns
+        -------
+        bool
+            True if saved successfully, False if no adapted state to save.
+        """
+        if self._online_ea_ref is None:
+            return False
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        state = {
+            "online_ea_ref": self._online_ea_ref,
+            "online_ea_n_samples": self._online_ea_n_samples,
+            "alpha": self._online_ea_alpha,
+            "min_samples": self._online_ea_min_samples,
+        }
+        with open(path, "wb") as f:
+            pickle.dump(state, f)
+        return True
+
+    def load_online_ea(self, path: str) -> bool:
+        """
+        Load previously saved online EA adaptation state.
+
+        Parameters
+        ----------
+        path : str
+            File path to the saved state.
+
+        Returns
+        -------
+        bool
+            True if loaded successfully, False otherwise.
+        """
+        if not os.path.isfile(path):
+            return False
+        try:
+            with open(path, "rb") as f:
+                state = pickle.load(f)
+            self._online_ea_ref = state["online_ea_ref"]
+            self._online_ea_n_samples = state.get("online_ea_n_samples", 0)
+            self._online_ea_alpha = state.get("alpha", self._online_ea_alpha)
+            self._online_ea_min_samples = state.get("min_samples", self._online_ea_min_samples)
+            print(
+                f"Online EA loaded from previous session (ref shape: {self._online_ea_ref.shape}, "
+                f"n_samples={self._online_ea_n_samples})"
+            )
+            return True
+        except Exception as e:
+            print(f"Could not load online EA state from {path}: {e}")
+            return False
 
     def _apply_ea_online(self, signals: np.ndarray) -> np.ndarray:
         """

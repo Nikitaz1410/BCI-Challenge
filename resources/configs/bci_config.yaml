@@ -39,7 +39,7 @@ remove_channels:
 
 subjects_ids: # Range if given 2 numbers | List if specific ids
   - 1
-  - 15
+  - 109
 
 n_folds: 3
 random_state: 42

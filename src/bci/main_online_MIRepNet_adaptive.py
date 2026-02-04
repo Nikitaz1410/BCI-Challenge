@@ -18,7 +18,7 @@ Pipeline:
    - Publish data via ZMQ (for visualization)
 
 Requirements:
-- Pre-trained MIRepNet model with Autoreject (from main_offline_MIRepNet_ar.py)
+- Pre-trained MIRepNet model with Autoreject (from main_offline_MIRepNet.py)
 - LSL EEG stream
 - Optional: LSL Markers stream for evaluation
 
@@ -126,9 +126,10 @@ class MIRepNetBCIEngine:
     def _init_models(self):
         """Load MIRepNet model, artifact rejection, and signal filters."""
         base_path = Path.cwd() / "resources" / "models"
-        # Model and artefact removal trained in main_offline_MIRepNet_ar.py
+        # Model and artefact removal trained in main_offline_MIRepNet.py
         model_path = base_path / "mirepnet_ar_best_model.pt"
         artifact_path = base_path / "mirepnet_artefact_removal.pkl"
+        self.ea_adapted_path = base_path / "mirepnet_online_ea_adapted.pkl"
 
         if not model_path.exists():
             raise FileNotFoundError(
@@ -148,11 +149,13 @@ class MIRepNetBCIEngine:
         logger.info(f"MIRepNet model loaded successfully (device: {self.clf.device})")
         logger.info(f"Model configuration: {self.clf._n_classes} classes")
 
-        # Initialize online EA adaptation (continuous domain adaptation)
-        self.clf.init_online_ea(alpha=0.1, min_samples=50)
-        logger.info("Online EA adaptation enabled (alpha=0.1, min_samples=30)")
+        # Initialize online EA adaptation (warm start from saved state if exists)
+        self.clf.init_online_ea(
+            alpha=0.2, min_samples=100, saved_path=str(self.ea_adapted_path)
+        )
+        logger.info("Online EA adaptation enabled (alpha=0.2, min_samples=100)")
 
-        # Artifact Rejection (thresholds trained in main_offline_MIRepNet_ar.py)
+        # Artifact Rejection (thresholds trained in main_offline_MIRepNet.py)
         if artifact_path.exists():
             with open(artifact_path, "rb") as f:
                 self.ar = pickle.load(f)
@@ -435,9 +438,15 @@ class MIRepNetBCIEngine:
         print("=" * 85 + "\n")
 
     def stop(self):
-        """Graceful shutdown with statistics summary."""
+        """Graceful shutdown with statistics summary and EA state persistence."""
         self.running = False
         logger.info("Stopping MIRepNet BCI Engine.")
+
+        # Save adapted EA for warm start on next run (same subject)
+        if hasattr(self, "ea_adapted_path") and self.clf.save_online_ea(
+            str(self.ea_adapted_path)
+        ):
+            logger.info(f"Saved adapted EA state to {self.ea_adapted_path}")
 
         # Calculate timing statistics
         n_preds = max(1, sum(self.stats["predictions"]))

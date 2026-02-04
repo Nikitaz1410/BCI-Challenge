@@ -451,7 +451,7 @@ def _create_classifier(classifier_type: str, random_state: Optional[int] = None)
             random_state=rs,
         )
     elif classifier_type in ("logreg", "lr", "logistic", "logistic_regression", "csp-logreg", "csp-lr"):
-        return LogisticRegression(max_iter=2000, class_weight=None, random_state=rs)
+        return LogisticRegression(random_state=rs, C=1e-4)
     elif classifier_type in ("rf", "random_forest", "csp-rf"):
         return RandomForestClassifier(
             n_estimators=100,

@@ -112,65 +112,68 @@ MODEL_CONFIGURATIONS: List[Dict[str, Any]] = [
         "classifier": "logreg",
         "scale": True,
     },
+    # CSP + Random Forest
+    {
+        "name": "CSP + RF",
+        "features": "csp",
+        "classifier": "rf",
+        "scale": True,
+    },
     # Band power + LDA
     {
-        "name": "BandPower + LDA",
+        "name": "BP + LDA",
         "features": "welch_bandpower",
         "classifier": "lda",
         "scale": True,
     },
     # Band power + SVM
     {
-        "name": "BandPower + SVM",
+        "name": "BP + SVM",
         "features": "welch_bandpower",
         "classifier": "svm",
         "scale": True,
     },
+    # Band power + Logistic Regression
+    {
+        "name": "BP + LogReg",
+        "features": "welch_bandpower",
+        "classifier": "logreg",
+        "scale": True,
+    },
+    # Band power + Random Forest
+    {
+        "name": "BP + RF",
+        "features": "welch_bandpower",
+        "classifier": "rf",
+        "scale": True,
+    },
     # CSP + Band power + LDA (combined features)
     {
-        "name": "CSP+BP + LDA",
+        "name": "CSP & BP + LDA",
         "features": ["csp", "welch_bandpower"],
         "classifier": "lda",
         "scale": True,
     },
     # CSP + Band power + SVM
     {
-        "name": "CSP+BP + SVM",
+        "name": "CSP & BP + SVM",
         "features": ["csp", "welch_bandpower"],
         "classifier": "svm",
         "scale": True,
     },
+    # CSP + Band power + Logistic Regression
+    {
+        "name": "CSP & BP + LogReg",
+        "features": ["csp", "welch_bandpower"],
+        "classifier": "logreg",
+        "scale": True,
+    },
     # CSP + Band power + Random Forest
     {
-        "name": "CSP+BP + RF",
+        "name": "CSP & BP + RF",
         "features": ["csp", "welch_bandpower"],
         "classifier": "rf",
         "scale": True,
-    },
-    # HybridLDA with different feature types
-    {
-        "name": "HybridLDA + Log-Bandpower",
-        "features": "log_bandpower",
-        "classifier": "hybrid_lda",
-        "scale": False,
-    },
-    {
-        "name": "HybridLDA + CSP",
-        "features": "csp",
-        "classifier": "hybrid_lda",
-        "scale": False,
-    },
-    {
-        "name": "HybridLDA + Welch-Bandpower",
-        "features": "welch_bandpower",
-        "classifier": "hybrid_lda",
-        "scale": False,
-    },
-    {
-        "name": "HybridLDA + CSP+BP",
-        "features": ["csp", "welch_bandpower"],
-        "classifier": "hybrid_lda",
-        "scale": False,
     },
 ]
 

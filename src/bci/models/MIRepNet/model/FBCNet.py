@@ -1,70 +1,15 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import sys
-current_module = sys.modules[__name__]
+
 
 class FBCNet(nn.Module):
-    # just a FBCSP like structure : chan conv and then variance along the time axis
-    '''
-        FBNet with seperate variance for every 1s.
-        The data input is in a form of batch x 1 x chan x time x filterBand
-    '''
-
-    def SCB(self, m, nChan, nBands, doWeightNorm=True, *args, **kwargs):
-        '''
-        The spatial convolution block
-        m : number of sptatial filters.
-        nBands: number of bands in the data
-        '''
-        return nn.Sequential(
-
-
-            Conv2dWithConstraint(nBands, m * nBands, (nChan, 1), groups=nBands,
-                                 max_norm=2, doWeightNorm=doWeightNorm, padding=0),
-            nn.BatchNorm2d(m * nBands),
-            swish()
-        )
-
-    def LastBlock(self, inF, outF, doWeightNorm=True, *args, **kwargs):
-        return nn.Sequential(
-            LinearWithConstraint(inF, outF, max_norm=0.5, doWeightNorm=doWeightNorm, *args, **kwargs),
-            nn.LogSoftmax(dim=1))
-
-    def __init__(self, nChan, nTime, nClass=2, nBands=2, m=32,
-                 temporalLayer='LogVarLayer', strideFactor=2, doWeightNorm=True, *args, **kwargs):
-        super(FBCNet, self).__init__()
-
-        self.nBands = nBands
-        self.m = m
-        self.strideFactor = strideFactor
-
-        # create all the parrallel SCBc
-        self.scb = self.SCB(m, nChan, self.nBands, doWeightNorm=doWeightNorm)
-
-        # Formulate the temporal agreegator
-        self.temporalLayer = current_module.__dict__[temporalLayer](dim=3)
-
-        # The final fully connected layer
-        self.lastLayer = self.LastBlock(self.m * self.nBands * self.strideFactor, nClass, doWeightNorm=doWeightNorm)
-
-        #self.clf = nn.Linear(self.lastLayer, nClass)
-
-    def forward(self, x):
-        #x = torch.squeeze(x.permute((0, 4, 2, 3, 1)), dim=4)
-        #x = torch.squeeze(x.permute((1,2,0,3,4)), dim=1)
-        #x = x.permute(0, 2, 3, 1)
-        x = x.squeeze()
-        x = self.scb(x)
-        x = x.reshape([*x.shape[0:2], self.strideFactor, int(x.shape[3] / self.strideFactor)])
-        x = self.temporalLayer(x)
-        x = torch.flatten(x, start_dim=1)
-        x = self.lastLayer(x)
-        #x = nn.Linear(in_features=x, out_features=3)
-        return x
-
-
-class FBCNet_2(nn.Module):
+    """
+    Filter Bank Common Spatial Pattern Network (FBCNet).
+    
+    Standard implementation that outputs logits (use CrossEntropyLoss).
+    Expects input shape: (batch, n_bands, n_electrodes, time_points)
+    """
     def __init__(self,
                  n_classes,
                  input_shape,
@@ -97,11 +42,7 @@ class FBCNet_2(nn.Module):
 
     def forward(self, x):
         out = self.scb(x)
-
-        #out = F.pad(out, (0, 3))
         out = out.reshape([*out.shape[:2], self.temporal_stride, int(out.shape[-1] / self.temporal_stride)])
-
-        #out = out.reshape([*x.shape[0:2], self.temporal_stride, int(x.shape[3] / self.temporal_stride)])
         out = self.temporal_layer(out)
         out = self.classifier(out)
         return out
