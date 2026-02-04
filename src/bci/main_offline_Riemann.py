@@ -29,6 +29,7 @@ Usage:
     python main_offline_Baseline.py
 """
 
+import pickle
 import re
 import sys
 import time
@@ -55,13 +56,13 @@ from bci.loading.loading import (
     load_target_subject_data,
 )
 
+# Models
+from bci.models.riemann import RiemannianClf
+
 # Preprocessing
 from bci.preprocessing.artefact_removal import ArtefactRemoval
 from bci.preprocessing.filters import Filter
 from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
-
-# Models
-from bci.models.riemann import RiemannianClf
 
 # Utils
 from bci.utils.bci_config import load_config
@@ -131,7 +132,9 @@ def run_cv_for_config(
     for fold_idx, (train_idx, val_idx) in enumerate(
         gkf.split(X_train, y_train, groups=groups)
     ):
-        fold_start = time.time()
+        fold_start = time.perf_counter()
+        timings = dict()
+        timings["filter_latency"] = 89.48  # Avg. Filter Group Delay
         print(f"  Fold {fold_idx + 1}/{n_folds}...", end=" ")
 
         # Extract windowed epochs for this fold
@@ -153,8 +156,12 @@ def run_cv_for_config(
         ar = ArtefactRemoval()
         ar.get_rejection_thresholds(X_train_fold, config)
 
-        X_train_clean, y_train_clean = ar.reject_bad_epochs(X_train_fold, y_train_fold)
-        X_val_clean, y_val_clean = ar.reject_bad_epochs(X_val_fold, y_val_fold)
+        X_train_clean, y_train_clean, groups_train_clean = ar.reject_bad_epochs_riemann(
+            X_train_fold, y_train_fold, fold_windowed_epochs["groups_train"]
+        )
+        X_val_clean, y_val_clean, _ = ar.reject_bad_epochs_riemann(
+            X_val_fold, y_val_fold
+        )
 
         # print(f"{X_train_clean.shape}")
 
@@ -165,24 +172,41 @@ def run_cv_for_config(
 
         try:
             clf = RiemannianClf(cov_est="lwf")
-            # clf.fit_centered(X_train_clean, y_train_clean, groups)
+            start_train_time = time.perf_counter()
+            # clf.fit_centered(X_train_clean, y_train_clean, groups_train_clean)
+            # clf.fit_special(X_train_clean, y_train_clean, groups_train_clean)
             clf.fit(X_train_clean, y_train_clean)
+            timings["train_time"] = time.perf_counter() - start_train_time
 
             # Evaluate on validation fold
-            fold_predictions = clf.predict(X_val_clean)
+            start_pred_time = time.perf_counter()
+            fold_predictions, _ = clf.predict(X_val_clean)
             fold_probabilities, _ = clf.predict_proba(X_val_clean)
+
+            # fold_predictions, fold_probabilities, _ = clf.predict_with_recentering(
+            #     X_val_clean
+            # )
+            timings["infer_latency"] = (
+                time.perf_counter() - start_pred_time
+            ) * 1000 / X_val_clean.shape[0] + (
+                0.07 + 0.02
+            )  # Avg. Filtering and AR are based on real-time computation on the M2 chip
+
+            timings["total_latency"] = (
+                timings["infer_latency"] * 10 + 89.48
+            )  # TransferFunction Number of Classification for Buffer, Avg. Filter Group Delay
 
             # Compute metrics
             fold_metrics = compile_metrics(
                 y_true=y_val_clean,
                 y_pred=fold_predictions,
                 y_prob=fold_probabilities,
-                timings=None,
+                timings=timings,
                 n_classes=n_classes,
             )
 
             cv_metrics_list.append(fold_metrics)
-            fold_time = time.time() - fold_start
+            fold_time = (time.perf_counter() - fold_start) * 1000
             fold_times.append(fold_time)
             print(f"Acc: {fold_metrics['Acc.']:.4f} ({fold_time:.1f}s)")
 
@@ -199,11 +223,25 @@ def run_cv_for_config(
             "F1 Score": "N/A",
             "ECE": "N/A",
             "Brier": "N/A",
+            "Train Time (s)": "N/A",
+            "Avg. Filter Latency (ms)": "N/A",
+            "Avg. Infer Latency (ms)": "N/A",
+            "Avg. Total Latency (ms)": "N/A",
         }
 
     # Compute mean and std for each metric
     result = {"Model": config_name}
-    metric_keys = ["Acc.", "B. Acc.", "F1 Score", "ECE", "Brier"]
+    metric_keys = [
+        "Acc.",
+        "B. Acc.",
+        "F1 Score",
+        "ECE",
+        "Brier",
+        "Train Time (s)",
+        "Avg. Filter Latency (ms)",
+        "Avg. Infer Latency (ms)",
+        "Avg. Total Latency (ms)",
+    ]
 
     for key in metric_keys:
         values = [m[key] for m in cv_metrics_list if key in m]
@@ -247,6 +285,8 @@ def run_baseline_comparison_pipeline():
 
     # Initialize filter
     filter_obj = Filter(config, online=False)
+    filter_latency = filter_obj.get_filter_latency()
+    print(f"Average filter latency: {filter_latency:.2f} ms")
 
     # Setup paths
     test_data_source_path = current_wd / "data" / "eeg" / config.target
@@ -283,7 +323,7 @@ def run_baseline_comparison_pipeline():
             all_target_events,
             target_metadata["filenames"],
             num_general=6,
-            num_dino=19,
+            num_dino=18,
             num_supression=0,
             shuffle=True,
         )
@@ -305,8 +345,13 @@ def run_baseline_comparison_pipeline():
         filtered_raw = raw.copy()
         filtered_raw.apply_function(filter_obj.apply_filter_offline)
 
+        # COMPUTE AVERAGE TIME IT TAKES TO FILTER
+
         # CHANNEL REMOVAL: Remove unnecessary channels (noise sources)
         filtered_raw.drop_channels(config.remove_channels)
+
+        # if "sub-P999_ses-S099_task-arrow_long_run-002_eeg" in filename:
+        # filtered_raw.crop(200)
 
         # EPOCHING: Create epochs with metadata for CV
         epochs = mne.Epochs(
@@ -318,6 +363,10 @@ def run_baseline_comparison_pipeline():
             preload=True,
             baseline=None,
         )
+
+        # Crop the epochs between 0.3 and 3.0
+        # Apply baseline correction
+        # epochs.apply_baseline((-0.8, -0.3))
 
         # Skip files with no epochs (avoids "zero-size array" in concatenate_epochs)
         if len(epochs) == 0:
@@ -345,6 +394,7 @@ def run_baseline_comparison_pipeline():
             "No epochs after preprocessing. All files had zero epochs (check events/event_id and epoching window)."
         )
     combined_epochs = mne.concatenate_epochs(all_epochs_list)
+    # combined_epochs.crop(0.3, 3.0)
     X_train = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
     y_train = combined_epochs.events[:, 2]  # Labels (e.g., 0, 1, 2)
 
@@ -402,20 +452,42 @@ def run_baseline_comparison_pipeline():
     # Train final model with best configuration on all data
     print("\nTraining final model with best configuration...")
 
-    X_train_windows, y_train_windows, _ = epochs_to_windows(
+    X_train_windows, y_train_windows, train_groups = epochs_to_windows(
         combined_epochs,
         groups,
         window_size=config.window_size,
         step_size=config.step_size,
     )
 
+    # Artifact removal within each fold
+    ar = ArtefactRemoval()
+    ar.get_rejection_thresholds(X_train_windows, config)
+
+    X_train_clean, y_train_clean, groups_train_clean = ar.reject_bad_epochs_riemann(
+        X_train_windows, y_train_windows, train_groups
+    )
+
     final_clf = RiemannianClf(cov_est="lwf")
-    final_clf.fit(X_train_windows, y_train_windows)
+    # final_clf.fit(X_train_windows, y_train_windows)
+    final_clf.fit_centered(X_train_clean, y_train_clean, groups_train_clean)
 
     # Save the best model
     model_dir = current_wd / "resources" / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
     model_path = model_dir / "baseline_best_model.pkl"
+    final_clf.save(str(model_path))
+    print(f"Best model saved to: {model_path}")
+
+    # Save the ar object with pickle
+    ar_path = model_dir / "ar.pkl"
+    with open(ar_path, "wb") as f:
+        pickle.dump(ar, f)
+    print(f"Artifact removal object saved to: {ar_path}")
+
+    # Save the best model
+    model_dir = current_wd / "resources" / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_dir / "model.pkl"
     final_clf.save(str(model_path))
     print(f"Best model saved to: {model_path}")
 

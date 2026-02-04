@@ -46,6 +46,10 @@ class BCIEngine:
             },
             "total_time_ms": 0.0,
         }
+        # Timings
+        self.filtering_time = 0.0
+        self.ar_time = 0.0
+        self.nr_of_loops = 0
 
         # 1. Load Configuration
         try:
@@ -71,7 +75,7 @@ class BCIEngine:
         """Load ML models and signal filters."""
         base_path = Path.cwd() / "resources" / "models"
         model_path = base_path / "model.pkl"
-        artifact_path = base_path / "artefact_removal.pkl"
+        artifact_path = base_path / "ar.pkl"
 
         # Signal Filter
         self.signal_filter = Filter(self.config, online=True)
@@ -147,8 +151,11 @@ class BCIEngine:
             )
             self.inlet_labels = None
 
-        self.inlet_eeg = StreamInlet(eeg_streams[0], max_chunklen=32)
-        logger.info(f"Connected to EEG: {eeg_streams[0].name()}")
+        # self.inlet_eeg = StreamInlet(eeg_streams[0], max_chunklen=32)
+        self.inlet_eeg = StreamInlet(eeg_streams[0])
+        logger.info(
+            f"Connected to EEG: {eeg_streams[0].name()} with ID {eeg_streams[0].source_id()}"
+        )
 
     def _update_buffer(self, buffer, new_data):
         """Efficiently shifts buffer and appends new data."""
@@ -199,8 +206,12 @@ class BCIEngine:
 
                 # --- 2. Preprocessing ---
                 # Transpose to (channels, samples) and filter
-                eeg_np = np.array(chunk).T[self.keep_mask]
+                eeg_np = np.array(chunk).T[self.keep_mask]  # Scale to microvolt
+                if self.config.online == "dino":
+                    eeg_np = eeg_np * 1e-6  # scale to microvolt
+                start_f = time.perf_counter()
                 filtered_chunk = self.signal_filter.apply_filter_online(eeg_np)
+                self.filtering_time += (time.perf_counter() - start_f) * 1000
 
                 # Update Main Buffer
                 self.buffer = self._update_buffer(self.buffer, filtered_chunk)
@@ -208,20 +219,35 @@ class BCIEngine:
                 # Send Data to Visualizer
                 self.zmq_pub.send_pyobj(("DATA", eeg_np, filtered_chunk))
 
+                start_ar = time.perf_counter()
                 # --- 3. Artifact Rejection ---
-                if self.ar.reject_bad_epochs_online(self.buffer):
+                is_artefact = self.ar.reject_bad_epochs_online(self.buffer)
+
+                self.ar_time += (time.perf_counter() - start_ar) * 1000
+                self.nr_of_loops += 1
+
+                if is_artefact:
                     # logger.debug("Artifact detected.")
                     self.zmq_pub.send_pyobj(("EVENT", "Artifact"))
                     continue
 
                 # --- 4. Classification ---
                 # Predict probabilities
-                probs, cov = self.clf.predict_proba(self.buffer)
-                prediction = np.argmax(probs)
+                # probs, cov = self.clf.predict_proba(self.buffer)
+                # prediction = np.argmax(probs)
+                prediction, probs, cov = self.clf.predict_with_recentering(
+                    self.buffer
+                )  # For normalized riemann predictor
+                if prediction is None:
+                    continue
+                prediction = prediction[0]
 
                 # Adapt the classifier if it is riemann
                 if isinstance(self.clf, RiemannianClf):
-                    self.clf.adapt(cov, prediction)
+                    # self.clf.adapt(
+                    #    cov, prediction
+                    # )  # UNCOMMENT FOR REALTIME PREDICTION-BASED ADAPTATION
+                    pass
 
                 if probs is None:
                     continue
@@ -367,6 +393,10 @@ class BCIEngine:
 
         print(f"Avg Processing Time per Epoch: {avg_time:.2f} ms")
         print("=" * 30 + "\n")
+        avg_fil = self.filtering_time / self.nr_of_loops
+        avg_ar = self.ar_time / self.nr_of_loops
+        print(f"Average filtering time: {avg_fil:.2f}")
+        print(f"Average artefact check time: {avg_ar:.2f}")
 
         self.udp_sock.close()
         self.zmq_ctx.destroy()
