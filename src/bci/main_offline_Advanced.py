@@ -308,7 +308,9 @@ def run_cv_for_config(
     for fold_idx, (train_idx, val_idx) in enumerate(
         gkf.split(X_train, y_train, groups=groups)
     ):
-        fold_start = time.time()
+        fold_start = time.perf_counter()
+        timings = dict()
+        timings["filter_latency"] = 89.48  # Avg. Filter Group Delay
         print(f"  Fold {fold_idx + 1}/{n_folds}...", end=" ", flush=True)
 
         # Extract windowed epochs for this fold
@@ -358,6 +360,7 @@ def run_cv_for_config(
             )
 
             # Train with validation data for early stopping
+            start_train_time = time.perf_counter()
             clf.fit(
                 X_train_clean,
                 y_train_clean,
@@ -365,27 +368,37 @@ def run_cv_for_config(
                 val_labels=y_val_clean,
                 random_state=fold_seed,
             )
+            timings["train_time"] = time.perf_counter() - start_train_time
 
             # Evaluate on validation fold
+            start_pred_time = time.perf_counter()
             fold_predictions = clf.predict(X_val_clean)
             fold_probabilities = clf.predict_proba(X_val_clean)
+            timings["infer_latency"] = (
+                time.perf_counter() - start_pred_time
+            ) * 1000 / X_val_clean.shape[0] + (
+                0.07 + 0.02
+            )  # Avg. Filtering and AR based on real-time computation on M2 chip
+            timings["total_latency"] = (
+                timings["infer_latency"] * 10 + 89.48
+            )  # TransferFunction Number of Classification for Buffer, Avg. Filter Group Delay
 
             # Compute metrics
             fold_metrics = compile_metrics(
                 y_true=y_val_clean,
                 y_pred=fold_predictions,
                 y_prob=fold_probabilities,
-                timings=None,
+                timings=timings,
                 n_classes=n_classes,
             )
 
             cv_metrics_list.append(fold_metrics)
-            fold_time = time.time() - fold_start
+            fold_time = time.perf_counter() - fold_start
             fold_times.append(fold_time)
             print(f"Acc: {fold_metrics['Acc.']:.4f} ({fold_time:.1f}s)")
 
         except Exception as e:
-            fold_time = time.time() - fold_start
+            fold_time = time.perf_counter() - fold_start
             print(f"Error: {e} ({fold_time:.1f}s)")
             continue
 
@@ -398,11 +411,25 @@ def run_cv_for_config(
             "F1 Score": "N/A",
             "ECE": "N/A",
             "Brier": "N/A",
+            "Train Time (s)": "N/A",
+            "Avg. Filter Latency (ms)": "N/A",
+            "Avg. Infer Latency (ms)": "N/A",
+            "Avg. Total Latency (ms)": "N/A",
         }
 
     # Compute mean and std for each metric
     result = {"Model": config_name}
-    metric_keys = ["Acc.", "B. Acc.", "F1 Score", "ECE", "Brier"]
+    metric_keys = [
+        "Acc.",
+        "B. Acc.",
+        "F1 Score",
+        "ECE",
+        "Brier",
+        "Train Time (s)",
+        "Avg. Filter Latency (ms)",
+        "Avg. Infer Latency (ms)",
+        "Avg. Total Latency (ms)",
+    ]
 
     for key in metric_keys:
         values = [m[key] for m in cv_metrics_list if key in m]
@@ -482,7 +509,7 @@ def run_advanced_comparison_pipeline():
             all_target_events,
             target_metadata["filenames"],
             num_general=6,
-            num_dino=18,
+            num_dino=17,
             num_supression=0,
             shuffle=True,
         )

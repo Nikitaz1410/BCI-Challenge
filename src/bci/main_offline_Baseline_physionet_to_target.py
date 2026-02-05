@@ -260,6 +260,10 @@ def _evaluate_transfer_for_config(
             "F1 Score": "N/A",
             "ECE": "N/A",
             "Brier": "N/A",
+            "Train Time (s)": "N/A",
+            "Avg. Filter Latency (ms)": "N/A",
+            "Avg. Infer Latency (ms)": "N/A",
+            "Avg. Total Latency (ms)": "N/A",
         }
 
     if len(X_test_clean) == 0:
@@ -271,9 +275,15 @@ def _evaluate_transfer_for_config(
             "F1 Score": "N/A",
             "ECE": "N/A",
             "Brier": "N/A",
+            "Train Time (s)": "N/A",
+            "Avg. Filter Latency (ms)": "N/A",
+            "Avg. Infer Latency (ms)": "N/A",
+            "Avg. Total Latency (ms)": "N/A",
         }
 
-    start_time = time.time()
+    start_time = time.perf_counter()
+    timings = dict()
+    timings["filter_latency"] = 89.48  # Avg. Filter Group Delay
 
     try:
         if model_config["classifier"] == "hybrid_lda":
@@ -285,7 +295,10 @@ def _evaluate_transfer_for_config(
                 uc_mu=0.4 * 2**-6,
                 sfreq=config.fs,
             )
+            start_train_time = time.perf_counter()
             clf.fit(X_train_clean, y_train_clean)
+            timings["train_time"] = time.perf_counter() - start_train_time
+            start_pred_time = time.perf_counter()
             y_pred = clf.predict(X_test_clean)
             y_prob = clf.predict_proba(X_test_clean)
         else:
@@ -298,25 +311,37 @@ def _evaluate_transfer_for_config(
                     "random_state": config.random_state,
                 },
             )
+            start_train_time = time.perf_counter()
             clf.fit(X_train_clean, y_train_clean)
+            timings["train_time"] = time.perf_counter() - start_train_time
+            start_pred_time = time.perf_counter()
             y_pred = clf.predict(X_test_clean)
             y_prob = clf.predict_proba(X_test_clean)
+
+        timings["infer_latency"] = (
+            time.perf_counter() - start_pred_time
+        ) * 1000 / X_test_clean.shape[0] + (
+            0.07 + 0.02
+        )  # Avg. Filtering and AR based on real-time computation on M2 chip
+        timings["total_latency"] = (
+            timings["infer_latency"] * 10 + 89.48
+        )  # TransferFunction Number of Classification for Buffer, Avg. Filter Group Delay
 
         metrics = compile_metrics(
             y_true=y_test_clean,
             y_pred=y_pred,
             y_prob=y_prob,
-            timings=None,
+            timings=timings,
             n_classes=n_classes,
         )
 
-        elapsed = time.time() - start_time
+        elapsed = time.perf_counter() - start_time
         print(
             f"  Target Acc: {metrics['Acc.']:.4f}, "
             f"F1: {metrics['F1 Score']:.4f} ({elapsed:.1f}s)"
         )
 
-        return {
+        result = {
             "Model": config_name,
             "Acc.": f"{metrics['Acc.']:.4f}",
             "B. Acc.": f"{metrics['B. Acc.']:.4f}",
@@ -325,6 +350,12 @@ def _evaluate_transfer_for_config(
             "Brier": f"{metrics['Brier']:.4f}",
             "Eval Time (s)": f"{elapsed:.1f}",
         }
+        if "Train Time (s)" in metrics:
+            result["Train Time (s)"] = f"{metrics['Train Time (s)']:.2f}"
+            result["Avg. Filter Latency (ms)"] = f"{metrics['Avg. Filter Latency (ms)']:.2f}"
+            result["Avg. Infer Latency (ms)"] = f"{metrics['Avg. Infer Latency (ms)']:.2f}"
+            result["Avg. Total Latency (ms)"] = f"{metrics['Avg. Total Latency (ms)']:.2f}"
+        return result
 
     except Exception as e:
         print(f"  Error during training/evaluation: {e}")
@@ -335,6 +366,10 @@ def _evaluate_transfer_for_config(
             "F1 Score": "N/A",
             "ECE": "N/A",
             "Brier": "N/A",
+            "Train Time (s)": "N/A",
+            "Avg. Filter Latency (ms)": "N/A",
+            "Avg. Infer Latency (ms)": "N/A",
+            "Avg. Total Latency (ms)": "N/A",
         }
 
 
