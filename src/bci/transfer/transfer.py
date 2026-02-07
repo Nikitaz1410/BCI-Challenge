@@ -1,95 +1,120 @@
+import json
 import logging
 import socket
-import json
 import numpy as np
-
+from typing import Optional, Tuple
 from bci.utils.bci_config import EEGConfig
 
 logger = logging.getLogger(__name__)
 
 
 class BCIController:
+    """
+    Handles BCI decision-making logic and external communication.
+
+    This controller smooths raw classifier probabilities using a sliding window
+    buffer (Moving Average) and sends UDP commands to external applications
+    (like a Dino Game) when confidence thresholds are met.
+    """
+
+    # Maps classifier index to (Human-readable Label, LSL/Event Marker)
     COMMAND_MAP = {
         0: ("CIRCLE", "CIRCLE ONSET"),
         1: ("ARROW LEFT", "ARROW LEFT ONSET"),
         2: ("ARROW RIGHT", "ARROW RIGHT ONSET"),
-    }  # Map from classification outputs to commands
+    }
 
     def __init__(self, config: EEGConfig) -> None:
+        """
+        Initializes the controller with a smoothing buffer.
+
+        Args:
+            config: Configuration object containing threshold, buffer size,
+                    and network settings.
+        """
         self.config = config
         self.threshold = self.config.classification_threshold
+
+        # Initialize buffer with NaN to ensure we don't act until the window is full
+        # Shape: (Number of Classes, Buffer Length)
+        self.buffer_size = self.config.classification_buffer
         self.classification_buffer = np.full(
-            (3, self.config.classification_buffer), fill_value=np.nan
+            (len(self.COMMAND_MAP), self.buffer_size), fill_value=np.nan
         )
 
-        # Connect to the marker stream coming from the dino game
-        self._connect_to_marker_stream()
+    def send_command(
+        self, probabilities: np.ndarray, sock: socket.socket
+    ) -> Optional[np.ndarray]:
+        """
+        Processes new probabilities and sends a command if confidence is high enough.
 
-        # Only connect to a socket in case the dino game is expected
-        # if self.config.online == "dino":
-        # Connect to the dinogame UDP server to send commands
-        # self._connect_socket(self.config.ip, self.config.port)
+        Args:
+            probabilities: The latest probability vector from the classifier.
+            sock: The UDP socket for communication.
 
-    def _connect_socket(self, ip: str, port: int):
-        try:
-            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server.bind((ip, port))
-            server.listen()
-            (client_socket, address) = server.accept()
+        Returns:
+            The integrated (averaged) probabilities if the buffer is full, else None.
+        """
+        # Ensure probabilities are aligned (vertical vector for the buffer)
+        probs = probabilities.reshape(-1, 1)
 
-            self.client_socket = client_socket
-        except Exception:
-            print("Error when connecting to the socket!")
+        # 1. Update Sliding Window: Shift old values left and append new ones at the end
+        self.classification_buffer = np.roll(self.classification_buffer, -1, axis=1)
+        self.classification_buffer[:, -1:] = probs
 
-    def _close_socket(self):
-        try:
-            self.client_socket.close()
-        except Exception:
-            print("Error when closing the socket!")
-
-    def _connect_to_marker_stream(self):
-        # MyDinoGameMarkerStream
-        pass
-
-    def _build_prediction(self, label: str, marker: str) -> bytes:
-        payload = {"prediction": label, "marker_recent": marker}
-        return json.dumps(payload).encode("utf-8")
-
-    def _send_udp(
-        self, sock: socket.socket, payload: bytes, ip: str, port: int
-    ) -> None:
-        sock.sendto(payload, (ip, port))
-
-    def send_command(self, probabilities: np.ndarray, sock: socket.socket):
-        probabilities = probabilities.T
-        # Update the classification buffer
-        self.classification_buffer[:, :-1] = self.classification_buffer[:, 1:]
-        self.classification_buffer[:, -1:] = probabilities
-
-        # Only process and send commands when buffer is full (no NaN values)
+        # 2. Guard: Only process if the buffer has been completely filled with data
         if np.isnan(self.classification_buffer).any():
             return None
 
-        # Integrate the probabilities
-        # TODO: Check how to do this best. Right now it is an average
-        buffer_probabilities = np.mean(self.classification_buffer, axis=1)
-        # Select the most probable command (Highest integrated probability)
-        most_probable_command = np.argmax(buffer_probabilities)
+        # 3. Integrate: Calculate the Moving Average across the time window
+        avg_probs = np.mean(self.classification_buffer, axis=1)
 
-        # Check if the command confidence is over the manual threshold and only send the command if it is
-        if buffer_probabilities[most_probable_command] >= self.threshold:
-            label_marker = self.COMMAND_MAP[most_probable_command]
-            if self.config.online == "dino":
-                # Only send the command if the dino game is expected
-                payload = self._build_prediction(*label_marker)
-                self._send_udp(sock, payload, self.config.ip, self.config.port)
-                logger.info(
-                    f"UDP SENT: {label_marker[0]} (prob={buffer_probabilities[most_probable_command]:.2f}) "
-                    f"-> {self.config.ip}:{self.config.port}"
-                )
+        # 4. Decision: Find the class with the highest integrated probability
+        best_class_idx = int(np.argmax(avg_probs))
+        confidence = avg_probs[best_class_idx]
+
+        # 5. Thresholding & Action
+        if confidence >= self.threshold:
+            self._execute_command(best_class_idx, confidence, sock)
         else:
             logger.debug(
-                f"Below threshold: max_prob={buffer_probabilities[most_probable_command]:.2f} < {self.threshold}"
+                f"Confidence below threshold: {confidence:.2f} < {self.threshold}"
             )
 
-        return buffer_probabilities
+        return avg_probs
+
+    def _execute_command(
+        self, class_idx: int, confidence: float, sock: socket.socket
+    ) -> None:
+        """Internal helper to format and send the UDP packet."""
+        if class_idx not in self.COMMAND_MAP:
+            logger.warning(f"Class index {class_idx} not found in COMMAND_MAP")
+            return
+
+        label, marker = self.COMMAND_MAP[class_idx]
+
+        # Logic for the specific 'dino' game integration
+        if self.config.online == "dino":
+            payload = self._build_payload(label, marker)
+            self._send_udp(sock, payload)
+
+            logger.info(
+                f"UDP SENT: {label} (Conf: {confidence:.2f}) -> "
+                f"{self.config.ip}:{self.config.port}"
+            )
+
+    def _build_payload(self, label: str, marker: str) -> bytes:
+        """Wraps the prediction into a JSON byte string."""
+        payload = {"prediction": label, "marker_recent": marker}
+        return json.dumps(payload).encode("utf-8")
+
+    def _send_udp(self, sock: socket.socket, payload: bytes) -> None:
+        """Dispatches the packet to the configured IP/Port."""
+        try:
+            sock.sendto(payload, (self.config.ip, self.config.port))
+        except Exception as e:
+            logger.error(f"Failed to send UDP packet: {e}")
+
+    def reset_buffer(self) -> None:
+        """Clears the smoothing buffer (useful between trials)."""
+        self.classification_buffer.fill(np.nan)

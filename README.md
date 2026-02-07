@@ -1,5 +1,7 @@
 # BCI Project
 
+Project developed as part of **Praktikum: Developing Reliable Decoders for a Brain-Computer-Interface**
+
 This project allows for the acquisition and processing of Brain-Computer Interface data. It is constructed using the modern Python package manager **[uv](https://github.com/astral-sh/uv)** and adheres to a `src` layout structure.
 
 This layout allows you to import your code as a package (e.g., `import bci.acquisition`) anywhere in the project without complex path hacks.

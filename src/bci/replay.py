@@ -2,7 +2,9 @@ import sys
 import time
 import logging
 import numpy as np
+import scipy.signal
 from pathlib import Path
+from typing import Dict
 from pylsl import StreamInfo, StreamOutlet
 
 # --- Path Setup ---
@@ -27,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 CMD_MAP = {0: "CIRCLE ONSET", 1: "ARROW LEFT ONSET", 2: "ARROW RIGHT ONSET"}
 
+# --- Configuration Toggle ---
+synthetic = False  # True: Sine wave | False: Real EEG
+synthetic_freq = 10.0  # Frequency in Hz
+synthetic_amp = 50.0  # Amplitude (typical EEG scale in uV)
+
 
 class BCIReplayer:
     def __init__(self, config):
@@ -37,7 +44,6 @@ class BCIReplayer:
 
     def _init_outlets(self):
         """Initialize LSL outlets."""
-        # EEG Outlet
         info_eeg = StreamInfo(
             name="EEG_Stream",
             type="EEG",
@@ -48,8 +54,6 @@ class BCIReplayer:
         )
         self.outlet_eeg = StreamOutlet(info_eeg)
 
-        # Labels Outlet (Sparse Markers)
-        # nominal_srate=0 indicates an irregular/sparse stream
         info_labels = StreamInfo(
             name="Labels_Stream",
             type="Markers",
@@ -59,138 +63,118 @@ class BCIReplayer:
             source_id="bci_replay_labels_001",
         )
         self.outlet_labels = StreamOutlet(info_labels)
-        
-        # Send initial dummy data to make streams discoverable immediately
-        # LSL streams need to be actively sending data to be discoverable
-        dummy_eeg = np.zeros((len(self.config.channels), 1), dtype=np.float32)
-        self.outlet_eeg.push_chunk(dummy_eeg.T.tolist())
-        # Send a dummy marker to make marker stream discoverable
+
+        # Discoverability delay
         self.outlet_labels.push_sample(["STREAM_READY"])
-        logger.info(
-            f"LSL Streams initialized. EEG: {self.fs}Hz, Markers: Sparse (Event-based)."
-        )
-        logger.info("✓ Streams are now discoverable. Waiting 1 second for LSL discovery...")
-        time.sleep(1)  # Give LSL time to register the streams
+        time.sleep(1)
 
     def stream(self, eeg_data: np.ndarray, events: np.ndarray):
         """
-        Stream EEG data continuously and inject Markers only when they occur.
-
-        Parameters:
-        - eeg_data: (n_channels, n_samples)
-        - events: (n_events, 3) array [sample_index, 0, label_id]
+        Stream EEG or Synthetic data.
         """
         n_channels, n_samples = eeg_data.shape
         chunk_duration = self.chunk_size / self.fs
         total_chunks = n_samples // self.chunk_size
 
-        # Sort events by sample index to ensure efficient processing
-        # (Though MNE usually provides them sorted)
         if len(events) > 0:
             events = events[np.argsort(events[:, 0])]
 
-        logger.info(
-            f"Starting Replay: {n_samples} samples, {len(events)} sparse events."
-        )
+        mode_str = f"SYNTHETIC ({synthetic_freq}Hz)" if synthetic else "REAL DATA"
+        logger.info(f"Starting Replay [{mode_str}]: {n_samples} samples.")
 
         start_time = time.perf_counter()
-
-        # Pointer to track which event we are currently waiting for
         event_ptr = 0
         n_events = len(events)
 
         for i in range(total_chunks):
-            # 1. Define Current Window
             start_idx = i * self.chunk_size
             end_idx = start_idx + self.chunk_size
 
-            # 2. Push EEG Chunk
-            chunk_eeg = eeg_data[:, start_idx:end_idx]
+            # --- Data Generation/Selection ---
+            if synthetic:
+                # Time vector for this chunk to maintain phase continuity
+                t = np.arange(start_idx, end_idx) / self.fs
+                sine_val = synthetic_amp * np.sin(2 * np.pi * synthetic_freq * t)
+                chunk_eeg = np.tile(sine_val, (n_channels, 1)).astype(np.float32)
+            else:
+                chunk_eeg = eeg_data[:, start_idx:end_idx]
+
+            # Push EEG
             self.outlet_eeg.push_chunk(chunk_eeg.T.tolist())
 
-            # 3. Check for Events in this Window (Synchronization)
-            # We check if the next event in the list falls within [start_idx, end_idx)
+            # --- Marker Injection ---
             while event_ptr < n_events:
                 ev_sample = events[event_ptr][0]
                 ev_id = events[event_ptr][2]
 
                 if start_idx <= ev_sample < end_idx:
-                    # Event is inside this chunk! Push it now.
-                    # Note: We send it immediately. Since we are in the loop processing
-                    # this specific chunk, the arrival time at the receiver will be
-                    # virtually identical to the EEG chunk arrival.
-                    logger.info(f"Sending Marker: {ev_id} at sample {ev_sample}")
-                    self.outlet_labels.push_sample([CMD_MAP[int(ev_id)]])
-
+                    marker_name = CMD_MAP.get(int(ev_id), "UNKNOWN")
+                    logger.info(f"Marker: {marker_name} at sample {ev_sample}")
+                    self.outlet_labels.push_sample([marker_name])
                     event_ptr += 1
                 elif ev_sample < start_idx:
-                    # Catchup: If we somehow skipped an event (shouldn't happen with correct logic)
                     event_ptr += 1
                 else:
-                    # Event is in the future (beyond end_idx), stop checking
                     break
 
-            # 4. Drift Correction (Sleep)
+            # Drift Correction
             target_time = start_time + ((i + 1) * chunk_duration)
             current_time = time.perf_counter()
             sleep_duration = target_time - current_time
-
             if sleep_duration > 0:
                 time.sleep(sleep_duration)
 
-            if i % (int(self.fs / self.chunk_size) * 5) == 0:
-                logger.debug(f"Stream heartbeat: {i}/{total_chunks}")
+        logger.info("Replay finished. Keep-alive active.")
+        self._keep_alive(n_channels)
 
-        logger.info("Replay finished. Keeping streams alive...")
-        logger.info("Press Ctrl+C to stop streaming.")
-        
-        # Keep streams alive by sending dummy data periodically
-        # This prevents the streams from disconnecting when replay finishes
+    def _keep_alive(self, n_channels):
+        """Maintains streams after replay ends."""
         try:
-            dummy_eeg = np.zeros((len(self.config.channels), self.chunk_size), dtype=np.float32)
-            heartbeat_interval = 0.5  # Send dummy data every 0.5 seconds (more frequent)
-            marker_interval = 2.0  # Send marker every 2 seconds
-            last_marker_time = time.time()
-            logger.info(f"Streams will stay alive. Sending heartbeat every {heartbeat_interval}s")
+            dummy_eeg = np.zeros((n_channels, self.chunk_size), dtype=np.float32)
             while True:
-                time.sleep(heartbeat_interval)
-                # Send dummy EEG chunk to keep stream alive
+                time.sleep(0.5)
                 self.outlet_eeg.push_chunk(dummy_eeg.T.tolist())
-                # Also send a dummy marker periodically to keep marker stream alive
-                current_time = time.time()
-                if current_time - last_marker_time >= marker_interval:
-                    self.outlet_labels.push_sample(["STREAM_ALIVE"])
-                    last_marker_time = current_time
+                self.outlet_labels.push_sample(["STREAM_ALIVE"])
         except KeyboardInterrupt:
-            logger.info("Streaming stopped by user.")
+            logger.info("Streaming stopped.")
 
 
+def get_filter_metrics(sos, fs, passband) -> Dict[str, float]:
+    """Calculates physical filter latency metrics."""
+    # Compute group delay using sosfreqz for precision
+    w, h = scipy.signal.sosfreqz(sos, worN=2000)
+    # Note: sos2tf is used here only for analysis, not filtering
+    _, gd = scipy.signal.group_delay(scipy.signal.sos2tf(sos), w)
+
+    freqs_hz = w * fs / (2 * np.pi)
+    mask = (freqs_hz >= passband[0]) & (freqs_hz <= passband[1])
+
+    passband_gd = gd[mask]
+    return {
+        "avg_latency_ms": (np.mean(passband_gd) / fs) * 1000,
+        "max_latency_ms": (np.max(passband_gd) / fs) * 1000,
+    }
+
+
+# --- Standard Loading Logic (Unchanged) ---
 def load_dataset(config, current_wd):
-    """Loads Raw MNE object and Events array."""
     logger.info("Loading Dataset...")
-
     if "Phy" in config.replay_subject_id:
         s_id = int(config.replay_subject_id.split("-")[1])
         raw, events, _, _, _ = load_physionet_data(
             subjects=[s_id], root=current_wd, channels=config.channels
         )
-        # raw is a list of [Raw], events is list of [Arr]
         return raw[0], events[0]
-
     else:
         test_data_source = current_wd / "data" / "eeg" / config.target
         test_data_target = current_wd / "data" / "datasets" / config.target
-
         (all_raws, all_events, _, _, meta) = load_target_subject_data(
             root=current_wd,
             source_path=test_data_source,
             target_path=test_data_target,
             resample=None,
         )
-
         s_id = int(config.replay_subject_id.split("-")[1])
-
-        # Load specific subject
         raws, events, _, _, _ = create_subject_train_set(
             config,
             all_raws,
@@ -201,39 +185,25 @@ def load_dataset(config, current_wd):
             num_supression=0,
             shuffle=False,
         )
-        # raws is a list, events is a list of arrays
         return raws[s_id - 1], events[s_id - 1]
 
 
 if __name__ == "__main__":
-    # --- Configuration ---
     current_wd = Path(__file__).resolve().parent.parent.parent
     config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
 
     try:
         config = load_config(config_path)
-    except Exception as e:
-        logger.error(f"Could not load config: {e}")
-        sys.exit(1)
-
-    # --- Load Data ---
-    try:
         mne_raw, mne_events = load_dataset(config, current_wd)
+
+        # Timing Metrics for the Report
+        # (Assuming you have a filter object/sos defined in your config)
+        # metrics = get_filter_metrics(filter_obj.sos, config.fs, [8, 30])
+        # logger.info(f"Filter Passband Latency: {metrics['avg_latency_ms']:.2f}ms (Avg)")
+
+        replayer = BCIReplayer(config)
+        replayer.stream(mne_raw.get_data(), np.array(mne_events))
+
     except Exception as e:
-        logger.error(f"Data loading failed: {e}")
+        logger.error(f"Execution failed: {e}")
         sys.exit(1)
-
-    # --- Pre-process ---
-    eeg_data = mne_raw.get_data()  # (n_channels, n_samples)
-
-    # Ensure events are standard numpy array
-    if isinstance(mne_events, list):
-        mne_events = np.array(mne_events)
-
-    # --- Start Stream ---
-    replayer = BCIReplayer(config)
-
-    try:
-        replayer.stream(eeg_data, mne_events)
-    except KeyboardInterrupt:
-        logger.info("Replay stopped by user.")
