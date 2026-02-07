@@ -26,9 +26,6 @@ Usage:
         source_folder="/root/data/eeg/sub-P999/eeg",
     )
 
-TODO: The function should load any data (P554 with 16 non-standard channels),
-P999 with 16 standard channels, P999 with 23 standard channels (from which 13 are matching anything else).
-Physionet loading function should load all 64 channels.
 """
 
 from __future__ import annotations
@@ -93,7 +90,7 @@ def _get_raw_xdf_offline(
     2. Recordings with 16 channels, and channel information exactly matches standard channel labels -> use existing channel labels
     3. Recordings with 17 channels -> P554 recordings with custom 16 channel labels + keyboard -> reorder channels to match standard
     4. Recordings with 24 channels -> discard the recording (different markers)
-    5. Recordings with channel information that does not match standard 10-20 montage -> use existing channel labels
+    5. Recordings with 16 channels which do not match standard 10-20 montage -> use existing channel labels and then reorder
 
     P554 recordings of types "blinking", "jaw_clenching", "Music" are discarded.
     """
@@ -306,11 +303,6 @@ def _get_raw_xdf_offline(
     for i, _duration in enumerate(duration_list):
         duration_list[i] = marker_durations[i % len(marker_durations)]
 
-    # Annotate the raw data with the markers (So that we know what events are happening at what time in the data)
-    # annotations = mne.Annotations(
-    #     onset=real_time_marker, duration=duration_list, description=marker
-    # )
-    #
     annotations = mne.Annotations(
         onset=real_time_marker, duration=3, description=marker
     )
@@ -343,8 +335,6 @@ def _standardize_and_map(raw, target_event_id):
         Raw object with annotations
     target_event_id : dict
         Final event ID mapping, e.g., {"rest": 0, "left_hand": 1, "right_hand": 2}
-    mode : str NOTE
-        "general" or "dino" (currently unused, auto-detected)
 
     Returns
     -------
@@ -593,13 +583,14 @@ def load_target_subject_data(
                 "channel_names": channel_names
             }
 
-    Notes:
+    Notes
     -----
     The current implementation processes following types of recordings:
     1. Recordings with 16 channels and no channel information -> assign 16 channel labels from standard 1020 montage
     2. Recordings with 16 channels, and channel information exactly matches standard channel labels -> use existing channel labels
     3. Recordings with 17 channels -> P554 recordings with custom 16 channel labels + keyboard -> reorder channels to match standard
     4. Recordings with 24 channels -> discard the recording (different markers)
+    5. Recordings with 16 channels, but non-standard channel labels -> use existing channel labels and then reorder to match standard 10-20 montage (P554 recordings)
 
     P554 recordings of types "blinking", "jaw_clenching", "Music" are discarded.
 
@@ -714,8 +705,6 @@ def load_target_subject_data(
 
         selected_events = _standardize_and_map(raw, target_event_id)
 
-        # NOTE: consider using JUMP and JUMP FAIL as evaluation of how user performs?
-
         selected_event_id.update(target_event_id)
 
         # Save files
@@ -745,14 +734,6 @@ def load_target_subject_data(
         [110] * len(loaded_raws),
         loaded_meta,
     )
-
-
-def load_fina_baseline():
-    pass
-
-
-def load_physionet_baseline():
-    pass
 
 
 def create_subject_train_set(
@@ -1016,233 +997,6 @@ def create_subject_test_set(
     return (test_raws, test_events, test_filenames, test_sub_ids)
 
 
-# TODO: delete in final version
-# def load_cho2017_data(subjects: list[int], root: Path, channels: list[str]) -> tuple:
-#     """Load Physionet Motor Imagery data for specified subjects.
-
-#     This function checks if the data is already saved on disk. If not, it downloads
-#     the data from Physionet, preprocesses it (attaching subject IDs), and saves it
-#     to disk for future use.
-
-#     Parameters
-#     ----------
-#     subjects : list[int]
-#         List of subject IDs to load. IDs are integers.
-#     root : str
-#         Path to the root directory of the dataset.
-#     channels : list[str]
-#         List of channel names to load from the raw data.
-
-#     Returns
-#     -------
-#     tuple
-#         A tuple containing:
-#         - loaded_raws: List of MNE Raw objects for each subject.
-#         - loaded_events: List of event arrays for each subject.
-#         - event_id: Dictionary mapping event labels to event IDs.
-#         - subject_ids_out: List of subject IDs corresponding to the loaded data.
-#         - raw_filenames: List of raw filenames corresponding to the loaded data.
-#     """
-
-#     cho2017_root = root / "data" / "datasets" / "cho2017"
-#     raw_dir = cho2017_root / "raws"
-#     event_dir = cho2017_root / "events"
-#     meta_dir = cho2017_root / "metadata"
-#     event_id_path = cho2017_root / "event_id.json"
-#     subjects_csv = meta_dir / "subjects.csv"
-
-#     for d in [raw_dir, event_dir, meta_dir]:
-#         d.mkdir(parents=True, exist_ok=True)
-
-#     # 1. DATA GENERATION / SAVING TO DISK
-#     if not subjects_csv.exists():
-#         dataset = Cho2017()
-#         # print("Dataset subjects available:", dataset.subject_list)
-#         if subjects:
-#             target_subjects = subjects
-#         else:
-#             target_subjects = dataset.subject_list
-#         # dataset.feet_runs = []
-
-#         # remove = [88, 92, 100]
-#         # target_subjects = [x for x in dataset.subject_list if x not in remove]
-
-#         # raise KeyboardInterrupt("Need to specify target subjects for Cho2017 dataset.")
-#         # event_dict = dataset.events # (other integers: 1, 2, 3)
-#         # print(event_dict)
-#         event_id = {
-#             "left_hand": 1,
-#             "right_hand": 2,
-#         }           # Cho2017 data does not have rest events
-
-#         # Save event_id mapping
-#         with open(event_id_path, "w") as f:
-#             json.dump(event_id, f, indent=2)
-
-#         print("Processing and saving Cho2017 data to disk...")
-#         # print("Keeping all 64 channels for now...")
-
-#         subject_rows = []
-
-#         for sub_id in target_subjects:
-#             raw_dict = dataset.get_data(subjects=[sub_id])
-#             raw_list = []
-#             for session in raw_dict[sub_id]:
-#                 for run in raw_dict[sub_id][session]:
-#                     # print(raw_dict[sub_id][session][run])
-#                     raw = raw_dict[sub_id][session][run]
-#                     raw_list.append(raw_dict[sub_id][session][run])
-
-#             raw_sub = mne.concatenate_raws(raw_list)
-
-#             if channels is not None:
-#                 raw_sub.pick(channels)
-#                 raw_sub.reorder_channels(channels)
-#             else:
-#                 print("Keeping all 64 channels for now...")
-
-#             raw_sub.resample(160)
-
-#             # --- ATTACH SUBJECT ID TO RAW ---
-#             # Use the 'subject_info' dictionary which is the standard MNE way
-#             raw_sub.info["subject_info"] = {"id": sub_id}
-
-#             raw_path = raw_dir / f"subj_{sub_id:03d}_raw.fif"
-#             events_path = event_dir / f"subj_{sub_id:03d}_events.npy"
-
-#             # events_sub, _ = mne.events_from_annotations(raw_sub)
-#             # print(original_event_id)
-
-#             events_sub, _ = mne.events_from_annotations(raw_sub, event_id=event_id)
-#             np.save(events_path, events_sub)
-#             raw_sub.save(raw_path, overwrite=True)
-#             # np.save(events_path, mne.find_events(raw_sub))
-
-#             # Record metadata to CSV
-#             subject_rows.append(
-#                 {
-#                     "subject_id": sub_id,
-#                     "raw_file": raw_path.name,
-#                     "events_file": events_path.name,
-#                 }
-#             )
-
-#         pd.DataFrame(subject_rows).to_csv(subjects_csv, index=False)
-
-#     #raise KeyboardInterrupt("Need to specify target subjects for Cho2017 dataset.")
-
-#     # 2. LOAD DATA FROM DISK
-#     with open(event_id_path, "r") as f:
-#         event_id = json.load(f)
-
-#     loaded_raws = []
-#     loaded_events = []
-#     subject_ids_out = []
-#     raw_filenames = []
-
-#     for sub_id in subjects:
-
-#         r_path = raw_dir / f"subj_{sub_id:03d}_raw.fif"
-#         e_path = event_dir / f"subj_{sub_id:03d}_events.npy"
-#         filename = f"subj_{sub_id:03d}_raw.fif"
-
-#         raw = mne.io.read_raw_fif(r_path, preload=True)
-#         evs = np.load(e_path)
-
-#         # Ensure the ID is present in the info after loading
-#         raw.info["subject_info"] = {"id": sub_id}
-
-#         loaded_raws.append(raw)
-#         loaded_events.append(evs)
-#         subject_ids_out.append(sub_id)
-#         raw_filenames.append(filename)
-
-#     return loaded_raws, loaded_events, event_id, subject_ids_out, raw_filenames
-
-
-# # loaded_cho_raws, loaded_cho_events, cho_event_id, cho_subject_ids, cho_raw_filenames = load_cho2017_data(
-# #     subjects = [],  # Cho2017 has subjects 1 to 54
-# #     root = Path.cwd(),
-# #     channels = [ "Fp1", "Fp2", "F3", "Fz", "F4", "T7", "C3", "Cz", "C4", "T8", "P3", "Pz", "P4", "PO7", "PO8", "Oz"]
-# # )
-
-
-# def create_cho_epochs(filtered_raw, events, sub_id, filename, original_event_id, target_event_id):
-
-#     # complete_epochs = []
-#     # Create the epochs for CV with metadata
-#     mi_epochs = mne.Epochs(
-#         filtered_raw,
-#         events,
-#         event_id=original_event_id,
-#         tmin=0.5,
-#         tmax=4.0,
-#         preload=True,
-#         baseline=None,
-#     )
-
-#     # Attach metadata
-#     mi_metadata = pd.DataFrame(
-#         {
-#             "subject_id": [sub_id] * len(mi_epochs),
-#             "filename": [filename] * len(mi_epochs),
-#             "condition": mi_epochs.events[:, 2],
-#         }
-#     )
-
-#     mi_epochs.metadata = mi_metadata
-#     # 2. Create REST epochs from pre-trial period
-#     # We'll create synthetic "rest" events BEFORE each MI event
-#     rest_events = events.copy()
-
-#     # Shift events backward by 4 seconds (so rest ends where MI begins)
-#     # This ensures rest epochs are [-3.5, 0.5]s relative to MI onset
-#     # But we'll extract [0.5, 4.0]s from these shifted events
-#     rest_events[:, 0] = rest_events[:, 0] - int(4.0 * filtered_raw.info['sfreq'])
-#     rest_events[:, 2] = 0  # Label all as "rest"
-
-#     # Filter out events that would go before recording start
-#     valid_rest_events = rest_events[rest_events[:, 0] >= int(0.5 * filtered_raw.info['sfreq'])]
-
-#     rest_epochs = mne.Epochs(
-#         filtered_raw,
-#         valid_rest_events,
-#         event_id={'rest': 0},
-#         tmin=0.5,
-#         tmax=4.0,  # Same time window as MI epochs!
-#         preload=True,
-#         baseline=None,
-#     )
-
-#     print(f"Rest epochs shape: {rest_epochs.get_data().shape}")
-
-
-#     # TODO: Normalize the data
-
-#     rest_epochs.event_id = {'rest': 0}
-#     # Attach metadata
-#     rest_metadata = pd.DataFrame(
-#         {
-#             "subject_id": [sub_id] * len(rest_epochs),
-#             "filename": [filename] * len(rest_epochs),
-#             "condition": rest_epochs.events[:, 2],
-#         }
-#     )
-#     rest_epochs.metadata = rest_metadata
-#     print(rest_epochs.copy().get_data().shape)
-
-#     # Keep MI labels as 1 and 2
-#     mi_epochs.event_id = original_event_id
-
-
-#     # Combine
-#     complete_epochs = mne.concatenate_epochs([rest_epochs, mi_epochs])
-
-#     # Final event_id
-#     complete_epochs.event_id = target_event_id
-
-#     return complete_epochs
-
 
 def validate_train_test_split(train_filenames: list, test_filenames: list) -> None:
     """
@@ -1276,7 +1030,7 @@ def validate_train_test_split(train_filenames: list, test_filenames: list) -> No
     overlap = train_set & test_set
 
     if overlap:
-        print("❌ ERROR: Found overlapping files between train and test sets!")
+        print("ERROR: Found overlapping files between train and test sets!")
         print(f"\nNumber of overlapping files: {len(overlap)}")
         print("\nOverlapping files:")
         for fname in sorted(overlap):
@@ -1288,7 +1042,7 @@ def validate_train_test_split(train_filenames: list, test_filenames: list) -> No
         )
 
     # Print summary
-    print("✅ No overlap detected between train and test sets")
+    print("No overlap detected between train and test sets")
     print(f"\nDataset Statistics:")
     print(f"  Training files:   {len(train_filenames)}")
     print(f"  Testing files:    {len(test_filenames)}")
@@ -1343,12 +1097,12 @@ def validate_train_test_split(train_filenames: list, test_filenames: list) -> No
     # Warn about small test sets
     if len(test_filenames) < 2:
         print(
-            "\n⚠️ WARNING: Test set has fewer than 2 files. Results may not be reliable."
+            "\n WARNING: Test set has fewer than 2 files. Results may not be reliable."
         )
 
     if len(train_filenames) < 3:
         print(
-            "\n⚠️ WARNING: Train set has fewer than 3 files. Model may not generalize well."
+            "\n WARNING: Train set has fewer than 3 files. Model may not generalize well."
         )
 
     print("=" * 80 + "\n")
