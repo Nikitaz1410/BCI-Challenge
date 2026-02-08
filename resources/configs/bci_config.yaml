@@ -2,7 +2,7 @@
 window_size: 250
 step_size: 32
 fs: 250
-resample: "None" # Options: None or int
+resample: ~ # Options: null (~) or int (e.g. 250)
 
 frequencies:
   - 8

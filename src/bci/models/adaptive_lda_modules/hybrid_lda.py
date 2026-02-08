@@ -598,12 +598,12 @@ def test_hybrid_lda_online_adaptation():
     hybrid.fit(X_train, y_train)
 
     print(f"[2] Initial fit complete")
-    print(f"    Stage A means shape: {hybrid.stage_a_means_.shape}")
-    print(f"    Stage B means shape: {hybrid.stage_b_means_.shape}")
+    print(f"    Stage A classes: {list(hybrid.stage_a_means_.keys())}")
+    print(f"    Stage B classes: {list(hybrid.stage_b_means_.keys())}")
 
     # Store initial means for comparison
-    stage_a_means_before = hybrid.stage_a_means_.copy()
-    stage_b_means_before = hybrid.stage_b_means_.copy()
+    stage_a_means_before = {k: v.copy() for k, v in hybrid.stage_a_means_.items()}
+    stage_b_means_before = {k: v.copy() for k, v in hybrid.stage_b_means_.items()}
 
     # =================================================================
     # 3. Get initial predictions on test sample
@@ -637,18 +637,18 @@ def test_hybrid_lda_online_adaptation():
     # =================================================================
     # 5. Verify means have changed
     # =================================================================
-    stage_a_means_after = hybrid.stage_a_means_.copy()
-    stage_b_means_after = hybrid.stage_b_means_.copy()
+    stage_a_means_after = {k: v.copy() for k, v in hybrid.stage_a_means_.items()}
+    stage_b_means_after = {k: v.copy() for k, v in hybrid.stage_b_means_.items()}
 
     # Stage A movement mean should change (index 1)
     stage_a_move_change = np.linalg.norm(stage_a_means_after[1] - stage_a_means_before[1])
     # Stage A rest mean should NOT change (no rest updates)
     stage_a_rest_change = np.linalg.norm(stage_a_means_after[0] - stage_a_means_before[0])
 
-    # Stage B left mean should change (index 0, since classes=[1,2])
-    stage_b_left_change = np.linalg.norm(stage_b_means_after[0] - stage_b_means_before[0])
+    # Stage B left mean should change (key 1, since classes=[1,2])
+    stage_b_left_change = np.linalg.norm(stage_b_means_after[1] - stage_b_means_before[1])
     # Stage B right mean should NOT change (no right updates)
-    stage_b_right_change = np.linalg.norm(stage_b_means_after[1] - stage_b_means_before[1])
+    stage_b_right_change = np.linalg.norm(stage_b_means_after[2] - stage_b_means_before[2])
 
     print(f"\n[5] Mean changes:")
     print(f"    Stage A rest mean change:  {stage_a_rest_change:.6f} (expected: 0)")

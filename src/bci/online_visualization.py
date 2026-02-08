@@ -55,7 +55,7 @@ DEFAULT_Y_OFFSET = 50
 DEFAULT_CHANNEL_NAMES = [
     ch
     for ch in config.channels
-    if config.remove_channels is not None and ch not in config.remove_channels
+    if not config.remove_channels or ch not in config.remove_channels
 ]
 
 THRESHOLD = config.classification_threshold
@@ -415,17 +415,6 @@ class EEGVisualizer(QtWidgets.QMainWindow):
         self.plot.addItem(line)
         self.markers.append({"line": line, "pos": self.ptr})
 
-    # def _redraw(self):
-    #     self.vline.setPos(self.ptr)
-    #     data = (
-    #         self.buffer_filt if self.cb_show_filtered.isChecked() else self.buffer_raw
-    #     )
-
-    #     for i in range(self.n_channels):
-    #         if self.curves[i].isVisible():
-    #             # Apply Scale and Offset
-    #             trace = (data[i] * self.current_scale) + (i * DEFAULT_Y_OFFSET)
-    #             self.curves[i].setData(trace)
     def _redraw(self):
         self.vline.setPos(self.ptr)
 

@@ -273,7 +273,7 @@ def compile_metrics(y_true, y_pred, y_prob, timings, n_classes):
 
     # Timings
     if timings is not None:
-        metrics["Train Time (s)"] = round(timings["train_time"], 2)
+        metrics["Train Time (s)"] = round(timings["train_time"] / 1000.0, 2)
 
         # Delay added by the filtering process
         metrics["Avg. Filter Latency (ms)"] = round(timings["filter_latency"], 2)

@@ -365,8 +365,8 @@ if __name__ == "__main__":
                 cv_result[key] = "N/A"
 
         # Add timing info if available
-        if cv_metrics_list and "train_time" in cv_metrics_list[0]:
-            fold_times = [m.get("train_time", 0) / 1000.0 for m in cv_metrics_list]  # Convert ms to seconds
+        if cv_metrics_list and "Train Time (s)" in cv_metrics_list[0]:
+            fold_times = [m.get("Train Time (s)", 0) for m in cv_metrics_list]
             cv_result["Avg. Fold Time (s)"] = f"{np.mean(fold_times):.1f}"
         else:
             cv_result["Avg. Fold Time (s)"] = "N/A"
@@ -378,7 +378,7 @@ if __name__ == "__main__":
 
         # Save average confusion matrix
         if len(cv_confusion_matrices) > 0:
-            avg_cm = np.mean(cv_confusion_matrices, axis=0).astype(int)
+            avg_cm = np.mean(cv_confusion_matrices, axis=0).round().astype(int)
             plt.figure(figsize=(8, 6))
             sns.heatmap(avg_cm, annot=True, fmt='d', cmap='Blues',
                         xticklabels=['Rest', 'Left', 'Right'],

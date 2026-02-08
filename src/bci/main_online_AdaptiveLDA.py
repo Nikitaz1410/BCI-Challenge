@@ -126,13 +126,13 @@ if __name__ == "__main__":
     else:
         try:
             # Fix for pickle files saved with old import paths (bci.Preprocessing -> bci.preprocessing)
-            import sys
             from bci.preprocessing import artefact_removal
             # Map old module paths to new ones for pickle compatibility
             sys.modules['bci.Preprocessing'] = sys.modules['bci.preprocessing']
             sys.modules['bci.Preprocessing.artefact_removal'] = artefact_removal
 
-            ar = pickle.load(open(artefact_rejection_path, "rb"))
+            with open(artefact_rejection_path, "rb") as f:
+                ar = pickle.load(f)
             print("✓ Artifact rejection thresholds loaded!")
         except (ModuleNotFoundError, ImportError, AttributeError) as e:
             print(f"⚠️  Warning: Could not load artifact rejection file: {e}")
@@ -140,7 +140,7 @@ if __name__ == "__main__":
             ar = None
 
     # Initialize filter for online processing
-    filter = Filter(config, online=True)
+    filter_obj = Filter(config, online=True)
     print("✓ Filter initialized (online mode)")
 
     # Initialize transfer function for sending commands to game
@@ -350,7 +350,7 @@ if __name__ == "__main__":
                         eeg_chunk = eeg_chunk[channel_indices_to_keep, :]
                     
                     # Filter incoming data chunk first (stateful filter updates zi)
-                    filtered_chunk = filter.apply_filter_online(eeg_chunk)
+                    filtered_chunk = filter_obj.apply_filter_online(eeg_chunk)
                     
                     n_new_samples = filtered_chunk.shape[1]
 
@@ -533,7 +533,7 @@ if __name__ == "__main__":
                 print("STOPPING ONLINE PROCESSING")
                 print("="*60)
                 print(f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications):.2f} ms")
-                print(f"Filter latency: {filter.get_filter_latency():.2f} ms")
+                print(f"Filter latency: {filter_obj.get_filter_latency():.2f} ms")
                 print(f"Total Predictions: {total_predictions}")
                 print(f"  Rejected: {total_rejected}")
                 print(f"  Accepted Successes: {total_successes}")
