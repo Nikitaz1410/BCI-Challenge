@@ -25,13 +25,24 @@ if missing_modules:
     print(f"   conda activate bci-challenge")
     print(f"   pip install {' '.join(missing_modules)}")
     print("\n   Or install all at once:")
-    print(f"   /opt/miniconda3/envs/bci-challenge/bin/pip install {' '.join(missing_modules)}")
+    print(
+        f"   /opt/miniconda3/envs/bci-challenge/bin/pip install {' '.join(missing_modules)}"
+    )
     sys.exit(1)
 
-import numpy as np
 from collections import deque
+from pathlib import Path
+
+import numpy as np
+
+from bci.utils.bci_config import load_config
 
 # --- Configuration ---
+
+root = Path.cwd()
+# Setup Config
+config = load_config(root / "resources" / "configs" / "bci_config.yaml")
+
 PORT = "5556"
 WINDOW_SIZE = 1000  # Total samples visible on screen
 REFRESH_RATE_MS = 20  # 50 FPS
@@ -42,18 +53,12 @@ DEFAULT_Y_OFFSET = 50
 
 # Fallback names
 DEFAULT_CHANNEL_NAMES = [
-    "F3",
-    "Fz",
-    "F4",
-    "C3",
-    "Cz",
-    "C4",
-    "P3",
-    "Pz",
-    "P4",
-    "PO7",
-    "PO8",
+    ch
+    for ch in config.channels
+    if not config.remove_channels or ch not in config.remove_channels
 ]
+
+THRESHOLD = config.classification_threshold
 
 
 class ZMQListener(QtCore.QThread):
@@ -229,11 +234,11 @@ class EEGVisualizer(QtWidgets.QMainWindow):
 
         # Threshold Line (0.6)
         thresh_line = pg.InfiniteLine(
-            pos=0.6,
+            pos=THRESHOLD,
             angle=0,
             movable=False,
             pen=pg.mkPen("r", width=2, style=QtCore.Qt.DashLine),
-            label="Threshold (0.6)",
+            label=f"Threshold ({THRESHOLD})",
             labelOpts={"position": 0.05, "color": (200, 50, 50)},
         )
         self.proba_plot.addItem(thresh_line)
@@ -410,17 +415,6 @@ class EEGVisualizer(QtWidgets.QMainWindow):
         self.plot.addItem(line)
         self.markers.append({"line": line, "pos": self.ptr})
 
-    # def _redraw(self):
-    #     self.vline.setPos(self.ptr)
-    #     data = (
-    #         self.buffer_filt if self.cb_show_filtered.isChecked() else self.buffer_raw
-    #     )
-
-    #     for i in range(self.n_channels):
-    #         if self.curves[i].isVisible():
-    #             # Apply Scale and Offset
-    #             trace = (data[i] * self.current_scale) + (i * DEFAULT_Y_OFFSET)
-    #             self.curves[i].setData(trace)
     def _redraw(self):
         self.vline.setPos(self.ptr)
 

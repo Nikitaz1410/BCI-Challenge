@@ -14,7 +14,6 @@ from sklearn.metrics import (
     balanced_accuracy_score,
     accuracy_score,
     f1_score,
-    brier_score_loss,
 )
 
 
@@ -77,7 +76,6 @@ class MetricsTable:
 
 def compute_confusion_matrix(y_test: np.ndarray, y_pred: np.ndarray, name: str):
     # Computes and visualizes Confusion Matrix
-    # Inspired by the A4_3 notebook
 
     cm = confusion_matrix(y_test, y_pred)
 
@@ -202,45 +200,6 @@ def compute_ece(y_true, y_prob, n_bins=10):
     return ece
 
 
-def average_iir_latency_ms(fs=250.0, fmin=8.0, fmax=30.0, n_points=100):
-    """
-    Compute average latency (ms) of an IIR SOS filter over its passband.
-
-    Parameters:
-    - sos: SOS matrix from scipy.signal.butter (or similar)
-    - fs: sampling rate in Hz
-    - fmin, fmax: passband edges in Hz
-    - n_points: number of frequency points to average over
-
-    Returns:
-    - avg_latency_ms: average latency in milliseconds
-    """
-    from scipy.signal import group_delay, sos2tf
-
-    lowcut = 8.0
-    highcut = 30.0
-    frequencies = [lowcut, highcut]
-    order = 4
-    fs = 250.0
-    # Convert SOS to transfer function
-    sos = scipy.signal.butter(
-        order, Wn=np.array(frequencies), btype="bandpass", fs=fs, output="sos"
-    )
-    b, a = sos2tf(sos)
-
-    # Compute group delay for each frequency
-    w, gd = group_delay((b, a), fs=fs)
-    freqs = np.linspace(fmin, fmax, n_points)
-
-    # Interpolate group delay at desired passband frequencies
-    gd_passband = np.interp(freqs, w, gd)
-
-    # Average latency in milliseconds
-    avg_latency_ms = np.mean(gd_passband) / fs * 1000
-
-    return avg_latency_ms
-
-
 def compute_itr(n_classes, accuracy, time_per_trial):
     """
     Computes Information Transfer Rate (ITR) based on Wolpaw's definition.
@@ -314,7 +273,7 @@ def compile_metrics(y_true, y_pred, y_prob, timings, n_classes):
 
     # Timings
     if timings is not None:
-        metrics["Train Time (s)"] = round(timings["train_time"], 2)
+        metrics["Train Time (s)"] = round(timings["train_time"] / 1000.0, 2)
 
         # Delay added by the filtering process
         metrics["Avg. Filter Latency (ms)"] = round(timings["filter_latency"], 2)
@@ -325,30 +284,14 @@ def compile_metrics(y_true, y_pred, y_prob, timings, n_classes):
         # Time it takes to send a command to the game (preprocessing, classification, transfer) ??
         metrics["Avg. Total Latency (ms)"] = round(timings["total_latency"], 2)
 
-        # TODO: Check again if this is correct
         itr = compute_itr(
             n_classes=n_classes,
             accuracy=metrics["Acc."],
             time_per_trial=(
                 metrics["Avg. Infer Latency (ms)"] + timings["filter_latency"]
             )
-            / 1000,  # TODO: Is this correct?
+            / 1000,
         )
         metrics["ITR (bits/min)"] = round(itr["itr_bits_per_min"], 2)
 
     return metrics
-
-
-def print_online_metrics(timings):
-    """Compute all metrics relevant during the online phase."""
-    metrics = {}
-    # Delay added by the filtering process
-    metrics["Avg. Filter Latency (ms)"] = round(timings["filter_latency"], 2)
-
-    # Time it takes to classifiy from raw to prediction (preprocessing + inference)
-    metrics["Avg. Infer Latency (ms)"] = round(timings["infer_latency"], 2)
-
-    # Time it takes to send a command to the game (preprocessing, classification, transfer) ??
-    metrics["Avg. Total Latency (ms)"] = round(timings["total_latency"], 2)
-
-    pass

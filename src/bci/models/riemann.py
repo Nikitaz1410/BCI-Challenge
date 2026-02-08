@@ -4,176 +4,113 @@ import numpy as np
 from pyriemann.classification import FgMDM
 from pyriemann.estimation import Covariances
 from pyriemann.utils.base import invsqrtm
-from pyriemann.utils.tangentspace import log_map_riemann, tangent_space
-from pyriemann.utils.test import is_sym_pos_def
-from pyriemann.utils.mean import mean_riemann
 from pyriemann.utils.geodesic import geodesic_riemann
-from pyriemann.utils.viz import plot_embedding
-from sklearn.externals._packaging.version import Optional
-from sklearn.externals.array_api_compat.numpy import bool_, sign
+from pyriemann.utils.mean import mean_riemann
+from pyriemann.utils.test import is_sym_pos_def
 
-import matplotlib.pyplot as plt
+# --- Core Riemannian Classifier Class ---
 
 
-# RiemannianClf: Classifier using Riemannian geometry for covariance matrices
 class RiemannianClf:
+    """
+    Classifier using Riemannian geometry for covariance matrices.
+
+    This class wraps pyriemann's FgMDM and provides utilities for session-based
+    recentering and online distribution adaptation.
+    """
+
     def __init__(self, cov_est=""):
         """
-        Initialize the classifier.
+        Initializes the Riemannian pipeline.
 
-        Parameters:
-        cov_est (str): Covariance estimator to use. If empty, uses direct computation.
+        Args:
+            cov_est (str): Covariance estimator type (e.g., 'scm', 'lwf', 'oas').
+                           If empty, uses direct computation with trace normalization.
         """
-        self.clf = FgMDM()  # Initialize the FgMDM classifier from pyriemann
-        self.cov_est = cov_est  # Store the covariance estimator type
-        self.online_predictions = 0  # Needed for realtime adaptation
-        self.recentering_centroid = None  # Needed for prediction
+        self.clf = FgMDM()
+        self.cov_est = cov_est
+        self.online_predictions = 0  # Counter for adaptation decay
+        self.recentering_centroid = None  # Global/Session mean for normalization
 
     def fit(self, signals, y):
-        """
-        Fit the classifier to the provided signals and labels.
-
-        Parameters:
-        signals (np.ndarray): Input signals (trials x channels x samples or channels x samples)
-        y (np.ndarray): Labels for each trial
-        """
+        """Standard fit: Extracts covariances and trains the FgMDM model."""
         covs = self._extract_features(signals)
-        # TODO: Add recentering? (Normalization)
         self.clf.fit(covs, y)
 
     def fit_centered(self, signals, y, groups):
+        """
+        Fits the model after recentering data by group (e.g., by subject or session).
+
+        Recentering moves each group's mean to the identity matrix, reducing
+        inter-subject/inter-session variability.
+        """
         covs = self._extract_features(signals)
         unique_groups = np.unique(groups)
 
-        # print(f"Covs: {covs.shape}")
-        # print(f"Y: {y.shape}")
-        # print(f"Groups: {groups.shape}")
+        X_train, y_train = None, None
 
-        X_train = None
-        y_train = None
+        for group in unique_groups:
+            idx = np.where(groups == group)[0]
+            grouped_covs = covs[idx]
+            y_grouped = y[idx]
 
-        for group_id, group in enumerate(unique_groups):
-            group_covs_idx = np.where(groups == group)[0]
-            grouped_covs = covs[group_covs_idx, :, :]
-            y_grouped = y[group_covs_idx]
-
-            # Add recentering to session centroid to have better class separation
+            # 1. Compute the Riemannian Mean for this group
             centroid = mean_riemann(grouped_covs)
 
-            # Compute the centered covs
+            # 2. Project group data to center (Parallel Transport to Identity)
             recentered_covs = recentering(grouped_covs, centroid)
 
             if X_train is None:
-                X_train = recentered_covs
-                y_train = y_grouped
+                X_train, y_train = recentered_covs, y_grouped
             else:
                 X_train = np.concatenate((X_train, recentered_covs), axis=0)
                 y_train = np.concatenate((y_train, y_grouped), axis=0)
 
+        # Set the global centroid for future prediction-time centering
         self.recentering_centroid = mean_riemann(X_train)
-
         self.clf.fit(X_train, y_train)
 
-    # Approach
-    # Create class centroids for each subject/session
-    # Optional: Recenter Data to Baseline - Session Centroid (Inter-Subject/Session Variability)
-    # Train the model on the class centroids
-    # Optional: Finetune to one of Fina's sessions (Recentering Formula, Geodesic Interpolation)
     def fit_special(self, signals, y, groups):
-        covs = self._extract_features(signals)
+        """
+        Advanced fit: Trains specifically on class centroids per group.
 
+        Reduces the dataset to 'Representative Archetypes' (one mean per class per group)
+        to handle high noise or imbalanced session data.
+        """
+        covs = self._extract_features(signals)
         unique_groups = np.unique(groups)
         classes = np.unique(y)
 
-        centroids = []
-        centroids_y = []
+        centroids, centroids_y = [], []
 
-        for group_id, group in enumerate(unique_groups):
-            # Compute the centroids of the group (sessions | subjects)
-            group_covs_idx = np.where(groups == group)[0]
+        for group in unique_groups:
+            idx = np.where(groups == group)[0]
+            grouped_covs = covs[idx]
+            grouped_y = y[idx]
 
-            grouped_covs = covs[group_covs_idx, :, :]
-            grouped_y = y[group_covs_idx]
+            # Recenter session data to common manifold origin
+            group_mean = mean_riemann(grouped_covs)
+            recentered_covs = recentering(grouped_covs, group_mean)
 
-            # Add recentering to session centroid to have better class separation
-            centroid = mean_riemann(grouped_covs)
+            for cls in classes:
+                cls_covs = recentered_covs[grouped_y == cls]
+                if cls_covs.shape[0] > 0:
+                    cls_centroid = mean_riemann(cls_covs)
 
-            # Compute the centered covs
-            recentered_covs = recentering(grouped_covs, centroid)
-            # recentered_covs = grouped_covs
-
-            for cls_id, cls in enumerate(classes):
-                try:
-                    cls_covs = recentered_covs[grouped_y == cls]
-
-                    if cls_covs.shape[0] <= 0:
-                        print(f"No covs for {cls} of sess {group}")
+                    if is_sym_pos_def(cls_centroid):
+                        centroids.append(cls_centroid)
+                        centroids_y.append(cls)
                     else:
-                        cls_centroid = mean_riemann(cls_covs)
+                        print(
+                            f"Warning: Centroid for Class {cls}, Group {group} is not SPD."
+                        )
 
-                        if not is_sym_pos_def(cls_centroid):
-                            print(f"Centroid of {cls}, {group} is not SPD!")
-                        else:
-                            # Compute the class-centroid
-                            centroids.append(cls_centroid)
-                            centroids_y.append(cls)
-                except Exception as e:
-                    print(f"Problem with Centroid of {cls}, {group}: {e}")
-
-        # Fit the classifier based on the
         centroids_X = np.array(centroids)
         centroids_y = np.array(centroids_y)
 
-        # Init the recentering centroid -> Distribution of the training data
         self.recentering_centroid = mean_riemann(centroids_X)
-
-        print(
-            f"Training on {centroids_X.shape} centroids with {centroids_y.shape} labels."
-        )
-
-        # Compute the Embd and plot it
-        # plot_embedding(
-        #     centroids_X,
-        #     centroids_y,
-        #     metric="riemann",
-        #     embd_type="Spectral",
-        #     normalize=True,
-        # )
-        plt.show(block=True)
-
+        print(f"Training on {centroids_X.shape[0]} class-centroids.")
         self.clf.fit(centroids_X, centroids_y)
-
-    def predict_with_recentering(self, covs):
-        predictions = []
-        predicted_covs = []
-        probabilities = []
-        try:
-            # `_extract_features` returns covariance matrices of shape:
-            # - (n_trials, n_channels, n_channels) for batch input
-            # - (n_channels, n_channels) for a single trial
-            covs = self._extract_features(covs)
-            if covs.ndim == 2:
-                covs = covs[np.newaxis, ...]
-
-            for cov in covs:
-                to_classify = cov[np.newaxis, ...]
-                self.adapt_distribution(to_classify)
-                cov = recentering(cov, self.recentering_centroid)
-                pred = self.clf.predict(cov)
-                proba = self.clf.predict_proba(cov)
-
-                predicted_covs.append(cov[0])
-                predictions.append(pred[0])
-                probabilities.append(proba[0])
-
-            return (
-                np.array(predictions),
-                np.array(probabilities),
-                np.array(predicted_covs),
-            )
-        except ValueError as e:
-            print(f"Error in feature extraction: {e}")
-            return None, None, None
 
     def predict(self, cov):
         """
@@ -199,205 +136,142 @@ class RiemannianClf:
         np.ndarray: Predicted class probabilities
         """
         try:
-            # `_extract_features` returns covariance matrices of shape:
-            # - (n_trials, n_channels, n_channels) for batch input
-            # - (n_channels, n_channels) for a single trial
             cov = self._extract_features(cov)
+
             if cov.ndim == 2:
                 cov = cov[np.newaxis, ...]
+
             return self.clf.predict_proba(cov), cov
+
         except ValueError as e:
             print(f"Error in feature extraction: {e}")
+
             return None, None
 
+    def predict_with_recentering(self, signals):
+        """
+        Predicts labels after applying online adaptation and recentering.
+
+        Args:
+            signals: Raw signals
+        Returns:
+            tuple: (Predictions, Probabilities, Recentered_Covariances)
+        """
+        try:
+            covs = self._extract_features(signals)
+            if covs.ndim == 2:
+                covs = covs[np.newaxis, ...]
+
+            preds, probs, recentered_list = [], [], []
+
+            for cov in covs:
+                # 1. Update global distribution mean (Unsupervised Adaptation)
+                self.adapt_distribution(cov[np.newaxis, ...])
+
+                # 2. Recenter the sample
+                rc_cov = recentering(cov, self.recentering_centroid)
+
+                # 3. Classify
+                preds.append(self.clf.predict(rc_cov)[0])
+                probs.append(self.clf.predict_proba(rc_cov)[0])
+                recentered_list.append(rc_cov[0])
+
+            return np.array(preds), np.array(probs), np.array(recentered_list)
+        except Exception as e:
+            print(f"Prediction Error: {e}")
+            return None, None, None
+
     def adapt_distribution(self, cov):
+        """
+        Unsupervised Adaptation: Slides the recentering centroid toward new data.
+
+        Uses the Geodesic (the shortest path on the manifold) to update the
+        global mean with a decaying learning rate.
+        """
         self.online_predictions += 1
+        alpha = 1 / (self.online_predictions + 1)
 
-        adaptation_factor = 1 / (
-            self.online_predictions + 1
-        )  # Number of already used predictions for adaptation
-
-        new_rc = geodesic_riemann(self.recentering_centroid, cov, adaptation_factor)
+        new_rc = geodesic_riemann(self.recentering_centroid, cov, alpha)
         if is_sym_pos_def(new_rc):
             self.recentering_centroid = new_rc
-        else:
-            print("Moved centroid is not SPD!")
 
-    # Adaptation based on: Towards Adaptive Classification using Riemannian Geometry approaches in Brain-Computer Interfaces
     def adapt(self, cov, prediction):
         """
-        Adapt the classifier by moving the class centroid towards the input covariance matrix.
+        Supervised Adaptation: Moves a specific class centroid toward a sample.
 
-        This method implements online adaptation by adjusting the class centroid in Riemannian space
-        based on the current prediction. The adaptation factor decreases with each update to
-        gradually incorporate new information while maintaining stability.
+        Based on:
+        Kumar, Satyam, Florian Yger, and Fabien Lotte.
+        "Towards adaptive classification using Riemannian geometry approaches in brain-computer interfaces."
+        2019 7th International Winter Conference on Brain-Computer Interface (BCI). IEEE, 2019.
 
-        Parameters:
-        cov (np.ndarray): Input covariance matrix to adapt towards
-        prediction (int): Predicted class label for the input covariance
+        Args:
+            cov: The sample covariance.
+            prediction: The predicted (or ground truth) class label.
         """
-
-        # Move the class centroid in the riemann space towards the handled covariance
-        # The class is the predicted class (How do we explain this?)
-
         self.online_predictions += 1
+        alpha = 1 / (self.online_predictions + 1)
 
-        adaptation_factor = 1 / (
-            self.online_predictions + 1
-        )  # Number of already used predictions for adaptation
-
-        # print(f"Move Towards: {prediction} by {adaptation_factor} geodesic units.")
-
+        # Access internal MDM class centroids
         cls_centroid = self.clf._mdm.covmeans_[prediction]
-        moved_cls_centroid = geodesic_riemann(cls_centroid, cov, adaptation_factor)
+        moved_centroid = geodesic_riemann(cls_centroid, cov, alpha)
 
-        if is_sym_pos_def(moved_cls_centroid):
-            # Replace the centroid of the clf
-            self.clf._mdm.covmeans_[prediction] = moved_cls_centroid
-        else:
-            print("Moved centroid is not SPD!")
+        if is_sym_pos_def(moved_centroid):
+            self.clf._mdm.covmeans_[prediction] = moved_centroid
 
     def _extract_features(self, signals):
-        """
-        Extract covariance features from the input signals.
-
-        Parameters:
-        signals (np.ndarray): Input signals
-
-        Returns:
-        np.ndarray: Covariance matrices
-        """
+        """Internal helper to ensure input is converted to covariance matrices."""
         return compute_covariances(signals, self.cov_est)
 
     def save(self, filepath):
-        """
-        Save the classifier instance to a file using pickle.
-
-        Parameters:
-        filepath (str): Path to the file where the instance will be saved
-        """
         with open(filepath, "wb") as f:
             pickle.dump(self, f)
 
     @staticmethod
     def load(filepath):
-        """
-        Load a classifier instance from a file.
-
-        Parameters:
-        filepath (str): Path to the file from which to load the instance
-
-        Returns:
-        RiemannianClf: Loaded classifier instance
-        """
         with open(filepath, "rb") as f:
             return pickle.load(f)
 
 
+# --- Riemannian Utility Functions ---
 def recentering(covs, reference):
     """
-    Center the covariance matrices around the given reference.
-
-    Parameters:
-    covs (np.ndarray): Covariance matrix or array of covariance matrices
-    reference (np.ndarray): Reference covariance matrix
-
-    Returns:
-    np.ndarray: Recentered covariance matrix/matrices
-
-    Raises:
-    ValueError: If any recentered covariance is not symmetric positive definite
+    Applies the transformation $C' = R^{-1/2} C R^{-1/2}$.
+    This centers the distribution around the Identity matrix.
     """
     inv_sqrt_ref = invsqrtm(reference)
-    if len(covs.shape) == 2:
-        # Single covariance matrix
-        recentered_covs = inv_sqrt_ref @ covs @ inv_sqrt_ref
-        if not is_sym_pos_def(recentered_covs):
-            raise ValueError(
-                "Recentered covariance is not symmetric positive definite."
-            )
-    else:
-        # Multiple covariance matrices
-        recentered_covs = np.array([inv_sqrt_ref @ cov @ inv_sqrt_ref for cov in covs])
-        if not all(is_sym_pos_def(cov) for cov in recentered_covs):
-            raise ValueError(
-                "At least one recentered covariance is not symmetric positive definite."
-            )
 
-    return recentered_covs
+    if covs.ndim == 2:
+        res = inv_sqrt_ref @ covs @ inv_sqrt_ref
+        if not is_sym_pos_def(res):
+            raise ValueError("Resulting matrix not SPD")
+        return res
 
-
-def project_to_tangent_space(covs, reference, mode="vector"):
-    """
-    Project covariance matrices to the tangent space of the given reference.
-
-    Parameters:
-    covs (np.ndarray): Covariance matrix or array of covariance matrices
-    reference (np.ndarray): Reference covariance matrix
-    mode (str): 'matrix' for matrix logarithm, 'vector' for tangent space vectorization
-
-    Returns:
-    np.ndarray: Projected data in tangent space
-
-    Raises:
-    ValueError: If mode is not 'matrix' or 'vector'
-    """
-    # Default metric is the affine-invariant riemann metric (AIRM)
-    if mode == "matrix":
-        ts_covs = log_map_riemann(reference, covs)
-    elif mode == "vector":
-        ts_covs = tangent_space(covs, reference)
-    else:
-        raise ValueError("Mode should be either 'matrix' or 'vector'.")
-
-    return ts_covs
+    res = np.array([inv_sqrt_ref @ c @ inv_sqrt_ref for c in covs])
+    return res
 
 
 def compute_covariances(data: np.ndarray, cov_est: str = "") -> np.ndarray:
     """
-    Compute the covariance matrix/matrices of the given data.
-
-    Parameters:
-    data (np.ndarray): 2D array (channels x samples) or 3D array (trials x channels x samples)
-    cov_est (str): Covariance estimator to use. If empty, uses direct computation.
-
-    Returns:
-    np.ndarray: Single covariance matrix (2D) or array of covariance matrices (3D)
-
-    Raises:
-    ValueError: If any computed covariance is not symmetric positive definite
+    Computes covariance matrices. If no estimator is provided, uses
+    sample covariance normalized by the trace.
     """
-    # If input is 2D, make it 3D with a single trial for unified processing
-    is_single = False
-    if data.ndim == 2:
+    is_single = data.ndim == 2
+    if is_single:
         data = data[np.newaxis, ...]
-        is_single = True
 
-    n_trials, n_channels, n_samples = (
-        data.shape
-    )  # n_samples is not used, but kept for clarity
-
-    if len(cov_est) == 0:
-        # print("Using direct covariance computation.")
-        covs = np.empty((n_trials, n_channels, n_channels))
+    if not cov_est:
+        # Manual computation: Center -> Dot Product -> Trace Normalize
+        n_trials, n_chan, _ = data.shape
+        covs = np.empty((n_trials, n_chan, n_chan))
         for i, window in enumerate(data):
-            # Remove mean from each channel to center the data
             window = window - np.mean(window, axis=1, keepdims=True)
-            t_cov = window @ window.T  # Compute covariance
-            cov = t_cov / np.trace(t_cov)  # Normalize by trace
-            covs[i] = cov
+            t_cov = window @ window.T
+            covs[i] = t_cov / np.trace(t_cov)
     else:
-        # print(f"Using covariance estimator: {cov_est}")
         cov_estimator = Covariances(estimator=cov_est)
         covs = cov_estimator.fit_transform(data)
 
-    # Check that all covariance matrices are symmetric positive definite
-    if not all(is_sym_pos_def(cov) for cov in covs):
-        raise ValueError(
-            "At least one recentered covariance is not symmetric positive definite."
-        )
+    if not all(is_sym_pos_def(c) for c in covs):
+        raise ValueError("Non-SPD matrix detected in covariance computation.")
 
-    # If input was 2D, return 2D output
-    if is_single:
-        return covs[0]
-    return covs
+    return covs[0] if is_single else covs

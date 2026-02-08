@@ -50,23 +50,13 @@ markers = {
     2: "right_hand"
 }
 
-# Import marker mapping from replay.py to keep them synchronized
-# This ensures replay.py and online script always use the same marker definitions
-try:
-    from bci.replay import CMD_MAP
-    # Create reverse mapping: string -> int
-    MARKER_STRING_TO_INT = {v: k for k, v in CMD_MAP.items()}
-    # Add dummy marker for stream initialization
-    MARKER_STRING_TO_INT["STREAM_READY"] = 0
-except ImportError:
-    # Fallback if replay.py is not available
-    MARKER_STRING_TO_INT = {
-        "CIRCLE ONSET": 0,
-        "ARROW LEFT ONSET": 1,
-        "ARROW RIGHT ONSET": 2,
-        "STREAM_READY": 0,  # Dummy marker from initialization
-    }
-    print("⚠️  Warning: Could not import CMD_MAP from replay.py. Using fallback mapping.")
+# Marker string to integer mapping (matches replay.py CMD_MAP)
+MARKER_STRING_TO_INT = {
+    "CIRCLE ONSET": 0,
+    "ARROW LEFT ONSET": 1,
+    "ARROW RIGHT ONSET": 2,
+    "STREAM_READY": 0,  # Dummy marker for stream initialization
+}
 
 def extract_features(signals, sfreq):
     """Extract log-bandpower features for online use."""
@@ -136,13 +126,13 @@ if __name__ == "__main__":
     else:
         try:
             # Fix for pickle files saved with old import paths (bci.Preprocessing -> bci.preprocessing)
-            import sys
             from bci.preprocessing import artefact_removal
             # Map old module paths to new ones for pickle compatibility
             sys.modules['bci.Preprocessing'] = sys.modules['bci.preprocessing']
             sys.modules['bci.Preprocessing.artefact_removal'] = artefact_removal
 
-            ar = pickle.load(open(artefact_rejection_path, "rb"))
+            with open(artefact_rejection_path, "rb") as f:
+                ar = pickle.load(f)
             print("✓ Artifact rejection thresholds loaded!")
         except (ModuleNotFoundError, ImportError, AttributeError) as e:
             print(f"⚠️  Warning: Could not load artifact rejection file: {e}")
@@ -150,7 +140,7 @@ if __name__ == "__main__":
             ar = None
 
     # Initialize filter for online processing
-    filter = Filter(config, online=True)
+    filter_obj = Filter(config, online=True)
     print("✓ Filter initialized (online mode)")
 
     # Initialize transfer function for sending commands to game
@@ -353,14 +343,14 @@ if __name__ == "__main__":
                 # Check if sample and labels are valid and non-empty
                 if eeg_chunk:
                     # Convert to numpy arrays and transpose to (n_channels, n_samples)
-                    eeg_chunk = np.array(eeg_chunk).T  # shape (n_channels, n_samples)
+                    eeg_chunk = np.array(eeg_chunk).T *1e-6 # shape (n_channels, n_samples)
                     
                     # Remove unwanted channels (if specified in config)
                     if hasattr(config, 'remove_channels') and config.remove_channels:
                         eeg_chunk = eeg_chunk[channel_indices_to_keep, :]
                     
                     # Filter incoming data chunk first (stateful filter updates zi)
-                    filtered_chunk = filter.apply_filter_online(eeg_chunk)
+                    filtered_chunk = filter_obj.apply_filter_online(eeg_chunk)
                     
                     n_new_samples = filtered_chunk.shape[1]
 
@@ -440,8 +430,9 @@ if __name__ == "__main__":
                 else:
                     crt_label = 0  # fallback to unknown
 
-                # Detect trial boundary (label changed from non-zero to different non-zero)
-                if previous_label != 0 and crt_label != previous_label and crt_label != 0:
+                # Detect trial boundary (movement trial ended - transitioned away from movement)
+                # Adaptation happens when: previous was movement (1 or 2) AND label changed
+                if previous_label != 0 and crt_label != previous_label:
                     # Trial just ended! Adapt the model with previous trial data
                     if trial_buffer is not None and trial_true_label is not None and trial_true_label != 0:
                         try:
@@ -542,7 +533,7 @@ if __name__ == "__main__":
                 print("STOPPING ONLINE PROCESSING")
                 print("="*60)
                 print(f"Avg time per loop: {avg_time_per_classification / max(1, number_of_classifications):.2f} ms")
-                print(f"Filter latency: {filter.get_filter_latency():.2f} ms")
+                print(f"Filter latency: {filter_obj.get_filter_latency():.2f} ms")
                 print(f"Total Predictions: {total_predictions}")
                 print(f"  Rejected: {total_rejected}")
                 print(f"  Accepted Successes: {total_successes}")

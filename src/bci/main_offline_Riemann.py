@@ -1,89 +1,37 @@
 """
 Offline Training and Testing Pipeline for the Baseline (AllRounder) Model.
-
-This script compares multiple feature/classifier configurations using
-session-wise grouped cross-validation.
-
-Pipeline:
-1. Load configuration from YAML
-2. Load target subject data
-3. Filter and preprocess the EEG data
-4. Create epochs with metadata for grouped CV (by session)
-5. For each model configuration:
-   - Perform K-Fold cross-validation
-   - Collect metrics
-6. Compare all configurations in a summary table
-
-Supported feature extractors:
-- CSP (Common Spatial Patterns)
-- Welch band power
-- Lateralization features
-
-Supported classifiers:
-- LDA (Linear Discriminant Analysis)
-- SVM (Support Vector Machine)
-- Logistic Regression
-- Random Forest
-
-Usage:
-    python main_offline_Baseline.py
+Implements session-wise GroupKFold Cross-Validation for Riemannian Geometry.
 """
 
 import pickle
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
-
-# Add src directory to Python path to allow imports
-src_dir = Path(__file__).parent.parent
-if str(src_dir) not in sys.path:
-    sys.path.insert(0, str(src_dir))
 
 import mne
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold
 
-# Evaluation
+# Local BCI Modules
 from bci.evaluation.metrics import MetricsTable, compile_metrics
-
-# Data Acquisition
 from bci.loading.loading import (
-    create_subject_test_set,
     create_subject_train_set,
     load_target_subject_data,
 )
-
-# Models
 from bci.models.riemann import RiemannianClf
-
-# Preprocessing
 from bci.preprocessing.artefact_removal import ArtefactRemoval
 from bci.preprocessing.filters import Filter
 from bci.preprocessing.windows import epochs_to_windows, epochs_windows_from_fold
-
-# Utils
 from bci.utils.bci_config import load_config
-from bci.utils.utils import choose_model
 
 
 def _session_id_from_filename(filename: str) -> str:
-    """
-    Extract session identifier from BIDS-style filename for CV grouping.
-
-    E.g. "sub-P999_ses-S002_task-dino_run-001_eeg_raw" -> "sub-P999_ses-S002".
-    Multiple files (runs) from the same session get the same ID so they stay
-    in the same CV fold. If the pattern is not found, returns the full filename
-    (one file = one group).
-    """
-    # Strip _raw suffix if present
+    """Extracts BIDS-style session identifier for CV grouping."""
     base = filename.replace("_raw", "").strip("_")
     match = re.match(r"(sub-[^_]+_ses-[^_]+)", base)
-    if match:
-        return match.group(1)
-    return filename
+    return match.group(1) if match else filename
 
 
 def run_cv_for_config(
@@ -93,52 +41,25 @@ def run_cv_for_config(
     y_train: np.ndarray,
     config: Any,
     n_classes: int,
-    n_folds: int = 5,
 ) -> Dict[str, Any]:
-    """
-    Run cross-validation for a single model configuration.
+    """Runs GroupKFold CV for the Riemannian Classifier."""
 
-    Parameters
-    ----------
-    combined_epochs : mne.Epochs
-        Combined epochs for all training data
-    groups : np.ndarray
-        Group labels for CV (e.g., session/file names)
-    X_train : np.ndarray
-        Training data (n_epochs, n_channels, n_times)
-    y_train : np.ndarray
-        Training labels
-    config : EEGConfig
-        Configuration object with window_size, step_size, etc.
-    n_classes : int
-        Number of classes
-    n_folds : int
-        Number of CV folds
-
-    Returns
-    -------
-    dict
-        Dictionary with model name and mean/std metrics
-    """
     config_name = "RiemannianClf"
-    print(f"\n{'='*60}")
-    print("Evaluating: Riemannian Classifier")
-    print(f"{'='*60}")
+    print(f"\n{'-'*60}\nEvaluating: {config_name}\n{'-'*60}")
 
+    # Use leave-one-session-out CV
+    n_folds = len(np.unique(groups))
     gkf = GroupKFold(n_splits=n_folds)
-    cv_metrics_list = []
-    fold_times = []
+    cv_metrics_list, fold_times = [], []
 
     for fold_idx, (train_idx, val_idx) in enumerate(
         gkf.split(X_train, y_train, groups=groups)
     ):
         fold_start = time.perf_counter()
-        timings = dict()
-        timings["filter_latency"] = 89.48  # Avg. Filter Group Delay
         print(f"  Fold {fold_idx + 1}/{n_folds}...", end=" ")
 
-        # Extract windowed epochs for this fold
-        fold_windowed_epochs = epochs_windows_from_fold(
+        # 1. Windowing
+        fold_windows = epochs_windows_from_fold(
             combined_epochs,
             groups,
             train_idx,
@@ -147,91 +68,71 @@ def run_cv_for_config(
             step_size=config.step_size,
         )
 
-        X_train_fold = fold_windowed_epochs["X_train"]
-        y_train_fold = fold_windowed_epochs["y_train"]
-        X_val_fold = fold_windowed_epochs["X_val"]
-        y_val_fold = fold_windowed_epochs["y_val"]
-
-        # Artifact removal within each fold
+        # 2. Artifact Removal
         ar = ArtefactRemoval()
-        ar.get_rejection_thresholds(X_train_fold, config)
+        ar.get_rejection_thresholds(fold_windows["X_train"], config)
 
-        X_train_clean, y_train_clean, groups_train_clean = ar.reject_bad_epochs_riemann(
-            X_train_fold, y_train_fold, fold_windowed_epochs["groups_train"]
+        X_tr_clean, y_tr_clean, gr_tr_clean = ar.reject_bad_epochs_riemann(
+            fold_windows["X_train"],
+            fold_windows["y_train"],
+            fold_windows["groups_train"],
         )
         X_val_clean, y_val_clean, _ = ar.reject_bad_epochs_riemann(
-            X_val_fold, y_val_fold
+            fold_windows["X_val"], fold_windows["y_val"]
         )
 
-        # print(f"{X_train_clean.shape}")
-
-        # Skip if no data left after artifact rejection
-        if len(X_train_clean) == 0 or len(X_val_clean) == 0:
-            print("Skipped (no data after AR)")
+        if len(X_tr_clean) == 0 or len(X_val_clean) == 0:
+            print("Skipped (No data post-AR)")
             continue
 
-        try:
-            clf = RiemannianClf(cov_est="lwf")
-            start_train_time = time.perf_counter()
-            # clf.fit_centered(X_train_clean, y_train_clean, groups_train_clean)
-            # clf.fit_special(X_train_clean, y_train_clean, groups_train_clean)
-            clf.fit(X_train_clean, y_train_clean)
-            timings["train_time"] = time.perf_counter() - start_train_time
+        # 3. Fit and Predict
+        clf = RiemannianClf(cov_est="lwf")
+        t_fit_start = time.perf_counter()
+        # clf.fit(X_tr_clean, y_tr_clean)
+        clf.fit_centered(X_tr_clean, y_tr_clean, gr_tr_clean)
+        # clf.fit_special(X_tr_clean, y_tr_clean, gr_tr_clean)
+        train_time = time.perf_counter() - t_fit_start
 
-            # Evaluate on validation fold
-            start_pred_time = time.perf_counter()
-            fold_predictions, _ = clf.predict(X_val_clean)
-            fold_probabilities, _ = clf.predict_proba(X_val_clean)
+        t_inf_start = time.perf_counter()
+        # COMMENT when using fit_centered() or fit_special()
+        # preds, _ = clf.predict(X_val_clean)
+        # probs, _ = clf.predict_proba(X_val_clean)
 
-            # fold_predictions, fold_probabilities, _ = clf.predict_with_recentering(
-            #     X_val_clean
-            # )
-            timings["infer_latency"] = (
-                time.perf_counter() - start_pred_time
-            ) * 1000 / X_val_clean.shape[0] + (
-                0.07 + 0.02
-            )  # Avg. Filtering and AR are based on real-time computation on the M2 chip
+        # UNCOMMENT COMMENT when using fit_centered() or fit_special()
+        preds, probs, _ = clf.predict_with_recentering(X_val_clean)
 
-            timings["total_latency"] = (
-                timings["infer_latency"] * 10 + 89.48
-            )  # TransferFunction Number of Classification for Buffer, Avg. Filter Group Delay
+        # Calculate AR/Filtering Effort (M2 Chip baseline constants)
+        inf_latency = (
+            (time.perf_counter() - t_inf_start) * 1000 / X_val_clean.shape[0]
+        ) + 0.09
 
-            # Compute metrics
-            fold_metrics = compile_metrics(
-                y_true=y_val_clean,
-                y_pred=fold_predictions,
-                y_prob=fold_probabilities,
-                timings=timings,
-                n_classes=n_classes,
-            )
-
-            cv_metrics_list.append(fold_metrics)
-            fold_time = (time.perf_counter() - fold_start) * 1000
-            fold_times.append(fold_time)
-            print(f"Acc: {fold_metrics['Acc.']:.4f} ({fold_time:.1f}s)")
-
-        except Exception as e:
-            print(f"Error: {e}")
-            continue
-
-    # Aggregate results
-    if len(cv_metrics_list) == 0:
-        return {
-            "Model": config_name,
-            "Acc.": "N/A",
-            "B. Acc.": "N/A",
-            "F1 Score": "N/A",
-            "ECE": "N/A",
-            "Brier": "N/A",
-            "Train Time (s)": "N/A",
-            "Avg. Filter Latency (ms)": "N/A",
-            "Avg. Infer Latency (ms)": "N/A",
-            "Avg. Total Latency (ms)": "N/A",
+        timings = {
+            "train_time": train_time,
+            "filter_latency": 89.48,
+            "infer_latency": inf_latency,
+            "total_latency": (inf_latency * 10) + 89.48,
         }
 
-    # Compute mean and std for each metric
-    result = {"Model": config_name}
-    metric_keys = [
+        # 4. Metrics
+        fold_metrics = compile_metrics(y_val_clean, preds, probs, timings, n_classes)
+        cv_metrics_list.append(fold_metrics)
+
+        fold_duration = time.perf_counter() - fold_start
+        fold_times.append(fold_duration)
+        print(f"Acc: {fold_metrics['Acc.']:.4f} ({fold_duration:.1f}s)")
+
+    return _aggregate_results(config_name, cv_metrics_list, fold_times)
+
+
+def _aggregate_results(
+    name: str, metrics: List[Dict], fold_times: List[float]
+) -> Dict[str, Any]:
+    """Helper to compute mean/std across CV folds."""
+    if not metrics:
+        return {"Model": name, "Acc.": "N/A"}
+
+    res = {"Model": name}
+    keys = [
         "Acc.",
         "B. Acc.",
         "F1 Score",
@@ -243,256 +144,107 @@ def run_cv_for_config(
         "Avg. Total Latency (ms)",
     ]
 
-    for key in metric_keys:
-        values = [m[key] for m in cv_metrics_list if key in m]
-        if values:
-            mean_val = np.mean(values)
-            std_val = np.std(values)
-            result[key] = f"{mean_val:.4f} +/- {std_val:.4f}"
-        else:
-            result[key] = "N/A"
+    for key in keys:
+        vals = [m[key] for m in metrics if key in m]
+        res[key] = f"{np.mean(vals):.4f} +/- {np.std(vals):.4f}" if vals else "N/A"
 
-    # Add timing info
-    result["Avg. Fold Time (s)"] = f"{np.mean(fold_times):.1f}"
-
-    return result
+    res["Avg. Fold Time (s)"] = f"{np.mean(fold_times):.1f}"
+    return res
 
 
 def run_baseline_comparison_pipeline():
-    """
-    Main pipeline that compares multiple model configurations using
-    session-wise grouped cross-validation.
-    """
-    # =========================================================================
-    # 1. Load Configuration
-    # =========================================================================
-    current_wd = Path.cwd()  # BCI-Challenge directory
+    """Main Orchestrator for the BCI Training Pipeline."""
+    root = Path.cwd()
 
-    try:
-        config_path = current_wd / "resources" / "configs" / "bci_config.yaml"
-        print(f"Loading configuration from: {config_path}")
-        config = load_config(config_path)
-        print("Configuration loaded successfully!")
-    except Exception as e:
-        print(f"Error loading config: {e}")
-        sys.exit(1)
-
-    # Initialize variables
+    # 1. Setup Config
+    config = load_config(root / "resources" / "configs" / "bci_config.yaml")
     np.random.seed(config.random_state)
 
-    # Number of folds = number of sessions (leave-one-session-out CV)
-    print("Using session-wise cross-validation (n_folds = n_sessions).")
+    # 2. Data Acquisition
+    print(f"\n{'='*60}\nLOADING DATA: {config.target}\n{'='*60}")
+    raws, events, evt_id, _, meta = load_target_subject_data(
+        root=root,
+        source_path=root / "data" / "eeg" / config.target,
+        target_path=root / "data" / "datasets" / config.target,
+        resample=False,
+    )
 
-    # Initialize filter
+    x_train_raw, y_train_evt, filenames, sub_ids, _ = create_subject_train_set(
+        config,
+        raws,
+        events,
+        meta["filenames"],
+        num_general=5,
+        num_dino=17,
+        num_supression=0,
+        shuffle=True,
+    )
+
+    # 3. Preprocessing
+    print(f"\n{'='*60}\nPREPROCESSING\n{'='*60}")
     filter_obj = Filter(config, online=False)
-    filter_latency = filter_obj.get_filter_latency()
-    print(f"Average filter latency: {filter_latency:.2f} ms")
+    all_epochs = []
 
-    # Setup paths
-    test_data_source_path = current_wd / "data" / "eeg" / config.target
-    test_data_target_path = current_wd / "data" / "datasets" / config.target
+    for raw, evts, fname, sid in zip(x_train_raw, y_train_evt, filenames, sub_ids):
+        f_raw = raw.copy().apply_function(filter_obj.apply_filter_offline)
+        f_raw.drop_channels(config.remove_channels)
 
-    # =========================================================================
-    # 2. Load Data
-    # =========================================================================
-    print("\n" + "=" * 60)
-    print("LOADING DATA")
-    print("=" * 60)
-
-    # Load all target subject data
-    (
-        all_target_raws,
-        all_target_events,
-        target_event_id,
-        target_sub_ids,
-        target_metadata,
-    ) = load_target_subject_data(
-        root=current_wd,
-        source_path=test_data_source_path,
-        target_path=test_data_target_path,
-        resample=None,
-    )
-
-    print(f"Loaded {len(all_target_raws)} sessions from target subject data.")
-
-    # Create training set from target subject data: Choose how many files of each type to include
-    x_raw_train, events_train, train_filenames, sub_ids_train, train_indices = (
-        create_subject_train_set(
-            config,
-            all_target_raws,
-            all_target_events,
-            target_metadata["filenames"],
-            num_general=6,
-            num_dino=18,
-            num_supression=0,
-            shuffle=True,
-        )
-    )
-    print(f"Using {len(x_raw_train)} sessions for cross-validation.")
-
-    # =========================================================================
-    # 3. Preprocessing: Filter and Create Epochs
-    # =========================================================================
-    print("\n" + "=" * 60)
-    print("PREPROCESSING")
-    print("=" * 60)
-
-    all_epochs_list = []
-    for raw, events, sub_id, filename in zip(
-        x_raw_train, events_train, sub_ids_train, train_filenames
-    ):
-        # FILTERING: Apply bandpass filter
-        filtered_raw = raw.copy()
-        filtered_raw.apply_function(filter_obj.apply_filter_offline)
-
-        # COMPUTE AVERAGE TIME IT TAKES TO FILTER
-
-        # CHANNEL REMOVAL: Remove unnecessary channels (noise sources)
-        filtered_raw.drop_channels(config.remove_channels)
-
-        # if "sub-P999_ses-S099_task-arrow_long_run-002_eeg" in filename:
-        # filtered_raw.crop(200)
-
-        # EPOCHING: Create epochs with metadata for CV
         epochs = mne.Epochs(
-            filtered_raw,
-            events,
-            event_id=target_event_id,
-            tmin=0.3,  # Start at 0.3s to avoid VEP/ERP from visual cues
+            f_raw,
+            evts,
+            event_id=evt_id,
+            tmin=0.3,
             tmax=3.0,
             preload=True,
             baseline=None,
         )
 
-        # Crop the epochs between 0.3 and 3.0
-        # Apply baseline correction
-        # epochs.apply_baseline((-0.8, -0.3))
+        if len(epochs) > 0:
+            epochs.metadata = pd.DataFrame(
+                {
+                    "subject_id": [sid] * len(epochs),
+                    "session": [_session_id_from_filename(fname)] * len(epochs),
+                    "filename": [fname] * len(epochs),
+                }
+            )
+            all_epochs.append(epochs)
 
-        # Skip files with no epochs (avoids "zero-size array" in concatenate_epochs)
-        if len(epochs) == 0:
-            print(f"  Skipping {filename}: no epochs after epoching.")
-            continue
-
-        # Session ID for CV: same session = same fold (extract sub-XXX_ses-YYY from filename)
-        session_id = _session_id_from_filename(filename)
-
-        # Attach metadata for grouped CV (by session)
-        metadata = pd.DataFrame(
-            {
-                "subject_id": [sub_id] * len(epochs),
-                "session": [session_id] * len(epochs),  # Group by session (not by file)
-                "filename": [filename] * len(epochs),
-                "condition": epochs.events[:, 2],
-            }
-        )
-        epochs.metadata = metadata
-        all_epochs_list.append(epochs)
-
-    # Combine all epochs (require at least one non-empty Epochs object)
-    if not all_epochs_list:
-        raise ValueError(
-            "No epochs after preprocessing. All files had zero epochs (check events/event_id and epoching window)."
-        )
-    combined_epochs = mne.concatenate_epochs(all_epochs_list)
-    # combined_epochs.crop(0.3, 3.0)
-    X_train = combined_epochs.get_data()  # Shape: (n_epochs, n_channels, n_times)
-    y_train = combined_epochs.events[:, 2]  # Labels (e.g., 0, 1, 2)
-
-    # Groups for CV: by session (multiple files can share one session)
+    combined_epochs = mne.concatenate_epochs(all_epochs)
+    X, y = combined_epochs.get_data(), combined_epochs.events[:, 2]
     groups = combined_epochs.metadata["session"].values
 
-    # Get unique sessions
-    unique_sessions = np.unique(groups)
-    n_folds = len(unique_sessions)  # One fold per session (leave-one-session-out)
+    # 4. Cross-Validation
+    cv_result = run_cv_for_config(combined_epochs, groups, X, y, config, len(evt_id))
 
-    print(f"Training data shape: {X_train.shape}")
-    print(f"Labels distribution: {np.unique(y_train, return_counts=True)}")
-    print(f"Number of sessions (CV groups): {len(unique_sessions)}")
-    print(f"Sessions: {list(unique_sessions)}")
-    print(f"Adjusted folds for CV: {n_folds}")
+    # Display Results
+    table = MetricsTable()
+    table.add_rows([cv_result])
+    table.display()
 
-    # =========================================================================
-    # 4. Run Cross-Validation for Each Configuration
-    # =========================================================================
-    print("\n" + "=" * 60)
-    print("EVALUATING RIEMANNIAN CLF")
-    print("=" * 60)
-
-    all_results = []
-    n_classes = len(target_event_id)
-
-    result = run_cv_for_config(
-        combined_epochs=combined_epochs,
-        groups=groups,
-        X_train=X_train,
-        y_train=y_train,
-        config=config,
-        n_classes=n_classes,
-        n_folds=n_folds,
+    # 5. Final Model Training
+    print("\nTraining Final Model on full dataset...")
+    X_win, y_win, win_groups = epochs_to_windows(
+        combined_epochs, groups, config.window_size, config.step_size
     )
 
-    all_results.append(result)
-
-    print("\n" + "=" * 80)
-    print("RIEMANNIAN CLF RESULTS")
-    print("=" * 80)
-    print(f"Cross-Validation: {n_folds}-fold, grouped by session (sub-XXX_ses-YYY)")
-    print(f"Total sessions: {len(unique_sessions)}")
-    print(f"Total epochs: {len(X_train)}")
-    print("=" * 80)
-
-    # Create comparison table (sorted by F1 score)
-    comparison_table = MetricsTable()
-    comparison_table.add_rows(all_results)
-    comparison_table.display()
-
-    # Also create a pandas DataFrame for easier analysis (sorted)
-    df_results = pd.DataFrame(all_results)
-
-    # Train final model with best configuration on all data
-    print("\nTraining final model with best configuration...")
-
-    X_train_windows, y_train_windows, train_groups = epochs_to_windows(
-        combined_epochs,
-        groups,
-        window_size=config.window_size,
-        step_size=config.step_size,
-    )
-
-    # Artifact removal within each fold
-    ar = ArtefactRemoval()
-    ar.get_rejection_thresholds(X_train_windows, config)
-
-    X_train_clean, y_train_clean, groups_train_clean = ar.reject_bad_epochs_riemann(
-        X_train_windows, y_train_windows, train_groups
-    )
+    ar_final = ArtefactRemoval()
+    ar_final.get_rejection_thresholds(X_win, config)
+    X_cl, y_cl, gr_cl = ar_final.reject_bad_epochs_riemann(X_win, y_win, win_groups)
 
     final_clf = RiemannianClf(cov_est="lwf")
-    # final_clf.fit(X_train_windows, y_train_windows)
-    final_clf.fit_centered(X_train_clean, y_train_clean, groups_train_clean)
+    final_clf.fit_centered(X_cl, y_cl, gr_cl)
 
-    # Save the best model
-    model_dir = current_wd / "resources" / "models"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    model_path = model_dir / "baseline_best_model.pkl"
-    final_clf.save(str(model_path))
-    print(f"Best model saved to: {model_path}")
+    # 6. Save Artifacts
+    save_dir = root / "resources" / "models"
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save the ar object with pickle
-    ar_path = model_dir / "ar.pkl"
-    with open(ar_path, "wb") as f:
-        pickle.dump(ar, f)
-    print(f"Artifact removal object saved to: {ar_path}")
+    final_clf.save(str(save_dir / "model.pkl"))
+    with open(save_dir / "ar.pkl", "wb") as f:
+        pickle.dump(ar_final, f)
 
-    # Save the best model
-    model_dir = current_wd / "resources" / "models"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    model_path = model_dir / "model.pkl"
-    final_clf.save(str(model_path))
-    print(f"Best model saved to: {model_path}")
-
-    return all_results, df_results
+    print(f"Final artifacts saved to: {save_dir}")
+    return [cv_result], pd.DataFrame([cv_result])
 
 
 if __name__ == "__main__":
-    all_results, df_results = run_baseline_comparison_pipeline()
+    run_baseline_comparison_pipeline()

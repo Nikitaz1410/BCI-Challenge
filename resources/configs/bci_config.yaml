@@ -2,14 +2,14 @@
 window_size: 250
 step_size: 32
 fs: 250
-resample: "None" # Options: None or int
+resample: ~ # Options: null (~) or int (e.g. 250)
 
 frequencies:
   - 8
   - 30
 order: 8
 
-artefact_removal: "asr" # Options: ar (Artefact Rejection), asr (Artefact Subspace Reconstruction)
+artefact_removal: "ar" # Options: ar (Artefact Rejection), asr (Artefact Subspace Reconstruction)
 
 # EEG Hardware/Channel setup: only valid for Physionet and P999
 channels:
@@ -49,8 +49,8 @@ target: "sub" # Folder name with all target subject data
 
 # Online
 online: "dino" # Options: dino (Needs an active eeg stream), prerecorded (for testing)
-replay_subject_id: "Dino-6" # Options: Phy-### (for Physionet data), Dino-## (Plays one dino game from Fina)
+replay_subject_id: "Dino-7" # Options: Phy-### (for Physionet data), Dino-## (Plays one dino game from Fina)
 ip: "127.0.0.1" # IP address for UDP communication to the dino game
 port: 5005 # Port for the UDP communication to the dino game
-classification_threshold: 0.6 # Value between 0 and 1 to determine the confidence threshold for classification
+classification_threshold: 0.4 # Value between 0 and 1 to determine the confidence threshold for classification
 classification_buffer: 10 # Number of classifications to be buffered for majority voting

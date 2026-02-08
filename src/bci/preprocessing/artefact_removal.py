@@ -1,13 +1,6 @@
-import mne
-
 import numpy as np
-import matplotlib.pyplot as plt
-from autoreject import get_rejection_threshold
 from typing import Optional, Any, Tuple
 from scipy import stats
-
-from meegkit.asr import ASR
-from meegkit.utils.matrix import sliding_window
 
 
 class ArtefactRemoval:
@@ -433,46 +426,3 @@ class ArtefactRemoval:
 
         # If any channel exceeds threshold, it's an artifact
         return np.any(ptp > self.rejection_threshold)
-
-
-# Wrapper for ASR
-class ArtefactCorrection:
-    def __init__(self, method="euclid"):
-        self.asr = ASR(method=method)
-
-    def fit(self, baseline):
-        _, sample_mask = self.asr.fit(baseline)
-
-    def apply_filter(self, signal, sf, plot=False):
-        n_channels = signal.shape[0]
-
-        # Apply filter using sliding (non-overlapping) windows
-        raw = sliding_window(signal, window=int(sf), step=int(sf))
-        clean = np.zeros_like(raw)
-
-        for i in range(raw.shape[1]):
-            clean[:, i, :] = self.asr.transform(raw[:, i, :])
-
-        raw = raw.reshape(n_channels, -1)  # reshape to (n_chans, n_times)
-        clean = clean.reshape(n_channels, -1)
-
-        if plot():
-            self._plot_asr(raw, clean, sf)
-
-        return clean
-
-    def _plot_asr(self, raw, clean, sf):
-        n_channels = raw.shape[0]
-        times = np.arange(raw.shape[-1]) / sf
-        f, ax = plt.subplots(n_channels, sharex=True, figsize=(8, 5))
-        for i in range(n_channels):
-            ax[i].plot(times, raw[i], lw=0.5, label="before ASR")
-            ax[i].plot(times, clean[i], label="after ASR", lw=0.5)
-            ax[i].set_ylim([-50, 50])
-            ax[i].set_ylabel(f"ch{i}")
-            ax[i].set_yticks([])
-        ax[i].set_xlabel("Time (s)")
-        ax[0].legend(fontsize="small", bbox_to_anchor=(1.04, 1), borderaxespad=0)
-        plt.subplots_adjust(hspace=0, right=0.75)
-        plt.suptitle("Before/after ASR")
-        plt.show()
