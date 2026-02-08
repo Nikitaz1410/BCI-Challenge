@@ -1,5 +1,5 @@
 """
-loading Module: This module handles data loading for the BCI pipeline.
+Loading module: This module handles data loading for the BCI pipeline.
 
 This module handles:
 1. Loading Physionet Motor Imagery Data
@@ -9,21 +9,28 @@ Usage:
     from src.bci import loading
 
     # Load Physionet data for subjects 1 to 5
-    physionet_raws,
-    physionet_events,
-    physionet_event_id,
-    physionet_subject_ids = loading.load_physionet_data(
+    raws_list,
+    events_list,
+    event_id,
+    subject_ids_list,
+    raw_filenames_list
+     = loading.load_physionet_data(
         subjects=list(range(1, 6)),
-        root="/path/to/root_dir"
+        root="/path/to/root_dir",
+        channels=["Fpz", "Fp1", "Fp2"]
     )
 
     # Load Target Subject data (Subject 110)
     target_raws,
     target_events,
     target_event_id,
-    target_subject_ids = loading.load_target_subject_data(
+    target_subject_ids,
+    target_subject_meta
+      = loading.load_target_subject_data(
         root="<BCI-Challange root directory>",
-        source_folder="/root/data/eeg/sub-P999/eeg",
+        source_folder="/root/data/eeg/sub",
+        target_folder="/root/data/datasets/sub",
+        resample=None
     )
 
 """
@@ -35,7 +42,6 @@ import warnings
 import sys
 from pathlib import Path
 
-from matplotlib import pyplot as plt
 import pandas as pd
 import numpy as np
 import json
@@ -44,15 +50,13 @@ import mne
 from mne.io import concatenate_raws
 
 import moabb
-from moabb.datasets import PhysionetMI, Cho2017
+from moabb.datasets import PhysionetMI
 
 from bci.utils.bci_config import EEGConfig
 
 # Add the root directory to the Python path
 root_dir = str(Path(__file__).resolve().parents[3])  # BCI-Challange directory
 sys.path.append(root_dir)
-
-# sys.path.append("..")
 
 moabb.set_log_level("info")
 warnings.filterwarnings("ignore")
@@ -347,7 +351,7 @@ def _standardize_and_map(raw, target_event_id):
         If no matching annotations found or no events extracted
     """
 
-    # 1. Define mappings specific to each recording type
+    # Define mappings specific to each recording type
     rename_map_base = {
         "ARROW LEFT": "left_hand",
         "ARROW RIGHT": "right_hand",
@@ -359,10 +363,8 @@ def _standardize_and_map(raw, target_event_id):
         "ARROW RIGHT ONSET": "right_hand",
         "CIRCLE ONSET": "rest",
     }
-
-    # 2. Apply the rename to the raw object
+    
     existing_descriptions = set(raw.annotations.description)
-    # print(f"Existing annotations before standardization: {existing_descriptions}")
 
     existing_descriptions = {str(desc) for desc in existing_descriptions}
 
@@ -376,7 +378,7 @@ def _standardize_and_map(raw, target_event_id):
     print(f"  Base markers ('<EVENT>') present: {base_markers_present}")
     print(f"  Onset markers ('<EVENT> ONSET') present: {onset_markers_present}")
 
-    # 4. Choose which mapping to use (priority: base > onset)
+    # Choose which mapping to use (priority: base > onset)
     if base_markers_present and onset_markers_present:
         print(
             f"  Both marker types found! Using base markers '<EVENT>' (higher priority)"
@@ -401,9 +403,6 @@ def _standardize_and_map(raw, target_event_id):
     print(f"  Renaming {len(actual_map)} types: {actual_map}")
     raw.annotations.rename(actual_map)
 
-    # print(f"Annotations after standardization: {set(raw.annotations.description)}")
-
-    # 3. Force extraction of ONLY the standardized keys
     try:
         events, _ = mne.events_from_annotations(raw, event_id=target_event_id)
     except ValueError as e:
@@ -461,7 +460,7 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
     for d in [raw_dir, event_dir, meta_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    # 1. DATA GENERATION / SAVING TO DISK
+    # Data generation / saving to disk if not already present
     if not subjects_csv.exists():
         dataset = PhysionetMI(imagined=True, executed=False)
         dataset.feet_runs = []
@@ -469,7 +468,6 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
         remove = [88, 92, 100]
         target_subjects = [x for x in dataset.subject_list if x not in remove]
 
-        # event_dict = dataset.events (other integers: 1, 2, 3)
         event_id = {
             "rest": 0,
             "left_hand": 1,
@@ -498,8 +496,7 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
             else:
                 print("Keeping all 64 channels for now...")
 
-            # --- ATTACH SUBJECT ID TO RAW ---
-            # Use the 'subject_info' dictionary which is the standard MNE way
+            # Attach subject id to raw
             raw_sub.info["subject_info"] = {"id": sub_id}
 
             raw_path = raw_dir / f"subj_{sub_id:03d}_raw.fif"
@@ -520,7 +517,7 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
 
         pd.DataFrame(subject_rows).to_csv(subjects_csv, index=False)
 
-    # 2. LOAD DATA FROM DISK
+    # Load data from disk
     with open(event_id_path, "r") as f:
         event_id = json.load(f)
 
@@ -540,7 +537,7 @@ def load_physionet_data(subjects: list[int], root: Path, channels: list[str]) ->
         raw = mne.io.read_raw_fif(r_path, preload=True)
         evs = np.load(e_path)
 
-        # Ensure the ID is present in the info after loading
+        # Ensure the id is present in the info after loading
         raw.info["subject_info"] = {"id": sub_id}
 
         loaded_raws.append(raw)
@@ -568,6 +565,8 @@ def load_target_subject_data(
         Path to the folder containing raw XDF files.
     target_path : Path
         Path to the folder where processed .fif files will be saved.
+    resample : float or None
+        If specified, resample the raw data to this frequency (in Hz). If None, keep original sampling rate.
 
     Returns
     -------
@@ -590,11 +589,11 @@ def load_target_subject_data(
     2. Recordings with 16 channels, and channel information exactly matches standard channel labels -> use existing channel labels
     3. Recordings with 17 channels -> P554 recordings with custom 16 channel labels + keyboard -> reorder channels to match standard
     4. Recordings with 24 channels -> discard the recording (different markers)
-    5. Recordings with 16 channels, but non-standard channel labels -> use existing channel labels and then reorder to match standard 10-20 montage (P554 recordings)
+    5. Recordings with 16 channels, but non-standard channel labels -> use existing channel labels and then reorder to match standard 
 
     P554 recordings of types "blinking", "jaw_clenching", "Music" are discarded.
 
-    The channel labels are hardcoded in the _get_raw_xdf_offline function.
+    The channel labels are hardcoded in the _get_raw_xdf_offline() function.
     A subset of channels can be selected during epoching.
 
     """
@@ -606,7 +605,7 @@ def load_target_subject_data(
     raw_save_dir.mkdir(parents=True, exist_ok=True)
     event_save_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- STEP 1: CHECK TARGET FOLDER ---
+    # Check target folder for existing .fif files
     existing_fif = sorted(list(raw_save_dir.glob("*.fif")))
 
     if len(existing_fif) > 0:
@@ -639,9 +638,6 @@ def load_target_subject_data(
         with open(target_path / "metadata.json", "r") as f:
             meta_from_json = json.load(f)
 
-        # CRITICAL: Use filenames from actual .fif files we loaded (same order as
-        # loaded_raws/loaded_events). metadata.json may have a different order,
-        # causing wrong (raw, filename) pairs and missing sessions in CV output.
         meta_filenames = meta_from_json.get("filenames", [])
         meta_channel_names = meta_from_json.get("channel_names", [])
         fn_to_ch = dict(zip(meta_filenames, meta_channel_names))
@@ -662,7 +658,6 @@ def load_target_subject_data(
             loaded_meta,
         )
 
-    # --- STEP 2: IF TARGET EMPTY, CHECK SOURCE ---
     if target_path is None:
         if source_path is None:
             raise ValueError(
@@ -693,15 +688,13 @@ def load_target_subject_data(
         "right_hand": 2,
     }
 
-    # --- STEP 3: PROCESS XDF AND INFER EVENT_ID ---
+    # Process .xdfs and infer event ids 
     for file_path in selected_files:
         raw, markers, channel_labels = _get_raw_xdf_offline(file_path)
 
         if raw is None:
             print("raw is None, skipping the file.")
             continue
-
-        montage = raw.info["chs"]
 
         selected_events = _standardize_and_map(raw, target_event_id)
 
@@ -718,7 +711,6 @@ def load_target_subject_data(
         channel_names.append(channel_labels)  # list of channel name lists
         raw_filenames.append(f"{base_name}_raw")  # list of filenames
 
-    # Save the inferred event_id for future runs
     with open(event_id_path, "w") as f:
         json.dump(selected_event_id, f, indent=2)
 
@@ -784,10 +776,6 @@ def create_subject_train_set(
     -----
     The function randomly selects the specified number of files from each category
     to form the training dataset if shuffle is True.
-
-    Total number of GENERAL files available:
-    Total number of DINO files available:
-    Total number of SUPRESSION files available:
 
     """
     np.random.seed(config.random_state)
@@ -908,18 +896,13 @@ def create_subject_test_set(
     -------
     test_raws : list
         List of MNE Raw objects for testing data
-    test_events : ndarray
-        Test events
+    test_events : list
+        List of ndarrays containing test events
     test_filenames : list
         List of filenames used in testing
     test_sub_ids : list
         List of subject IDs corresponding to testing data
 
-    Notes
-    -----
-        Total number of GENERAL files available:
-        Total number of DINO files available:
-        Total number of SUPRESSION files available:
     """
     np.random.seed(config.random_state)
 
@@ -1000,7 +983,8 @@ def create_subject_test_set(
 
 def validate_train_test_split(train_filenames: list, test_filenames: list) -> None:
     """
-    Validates that training and testing datasets have no overlapping files.
+    Validates that training and testing datasets have no overlapping files. Can be 
+    optionally called after creating the train/test split to ensure data integrity.
 
     Parameters
     ----------
