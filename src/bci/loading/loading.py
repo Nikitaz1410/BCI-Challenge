@@ -79,12 +79,12 @@ def _get_raw_xdf_offline(
 
     Returns
     -------
-    raw_data : mne.io.RawArray
-        Raw data object.
-    markers : list
-        List of markers.
-    channel_labels : list[str]
-        List of channel labels.
+    raw_data : mne.io.RawArray | None
+        Raw data object or None if the recording is discarded.
+    markers : list | None
+        List of markers or None if the recording is discarded.
+    channel_labels : list[str] | None
+        List of channel labels or None if the recording is discarded.
 
     Notes
     -----
@@ -362,10 +362,8 @@ def _standardize_and_map(raw, target_event_id):
         "ARROW RIGHT ONSET": "right_hand",
         "CIRCLE ONSET": "rest",
     }
-    
-    existing_descriptions = set(raw.annotations.description)
 
-    existing_descriptions = {str(desc) for desc in existing_descriptions}
+    existing_descriptions = {str(desc) for desc in set(raw.annotations.description)}
 
     base_markers_present = any(
         k in existing_descriptions for k in rename_map_base.keys()
