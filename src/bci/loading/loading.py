@@ -6,7 +6,7 @@ This module handles:
 2. Loading Target Subject Data
 
 Usage:
-    from src.bci import loading
+    from bci.loading import loading
 
     # Load Physionet data for subjects 1 to 5
     raws_list,
@@ -21,11 +21,11 @@ Usage:
     )
 
     # Load Target Subject data (Subject 110)
-    target_raws,
-    target_events,
-    target_event_id,
-    target_subject_ids,
-    target_subject_meta
+    raws_list,
+    events_list,
+    event_id,
+    subject_ids_list,
+    subject_meta_dict
       = loading.load_target_subject_data(
         root="<BCI-Challange root directory>",
         source_folder="/root/data/eeg/sub",
@@ -37,7 +37,6 @@ Usage:
 
 from __future__ import annotations
 
-from os import PathLike
 import warnings
 import sys
 from pathlib import Path
