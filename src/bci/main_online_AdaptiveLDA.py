@@ -50,23 +50,13 @@ markers = {
     2: "right_hand"
 }
 
-# Import marker mapping from replay.py to keep them synchronized
-# This ensures replay.py and online script always use the same marker definitions
-try:
-    from bci.replay import CMD_MAP
-    # Create reverse mapping: string -> int
-    MARKER_STRING_TO_INT = {v: k for k, v in CMD_MAP.items()}
-    # Add dummy marker for stream initialization
-    MARKER_STRING_TO_INT["STREAM_READY"] = 0
-except ImportError:
-    # Fallback if replay.py is not available
-    MARKER_STRING_TO_INT = {
-        "CIRCLE ONSET": 0,
-        "ARROW LEFT ONSET": 1,
-        "ARROW RIGHT ONSET": 2,
-        "STREAM_READY": 0,  # Dummy marker from initialization
-    }
-    print("⚠️  Warning: Could not import CMD_MAP from replay.py. Using fallback mapping.")
+# Marker string to integer mapping (matches replay.py CMD_MAP)
+MARKER_STRING_TO_INT = {
+    "CIRCLE ONSET": 0,
+    "ARROW LEFT ONSET": 1,
+    "ARROW RIGHT ONSET": 2,
+    "STREAM_READY": 0,  # Dummy marker for stream initialization
+}
 
 def extract_features(signals, sfreq):
     """Extract log-bandpower features for online use."""
@@ -353,7 +343,7 @@ if __name__ == "__main__":
                 # Check if sample and labels are valid and non-empty
                 if eeg_chunk:
                     # Convert to numpy arrays and transpose to (n_channels, n_samples)
-                    eeg_chunk = np.array(eeg_chunk).T  # shape (n_channels, n_samples)
+                    eeg_chunk = np.array(eeg_chunk).T *1e-6 # shape (n_channels, n_samples)
                     
                     # Remove unwanted channels (if specified in config)
                     if hasattr(config, 'remove_channels') and config.remove_channels:
@@ -440,8 +430,9 @@ if __name__ == "__main__":
                 else:
                     crt_label = 0  # fallback to unknown
 
-                # Detect trial boundary (label changed from non-zero to different non-zero)
-                if previous_label != 0 and crt_label != previous_label and crt_label != 0:
+                # Detect trial boundary (movement trial ended - transitioned away from movement)
+                # Adaptation happens when: previous was movement (1 or 2) AND label changed
+                if previous_label != 0 and crt_label != previous_label:
                     # Trial just ended! Adapt the model with previous trial data
                     if trial_buffer is not None and trial_true_label is not None and trial_true_label != 0:
                         try:

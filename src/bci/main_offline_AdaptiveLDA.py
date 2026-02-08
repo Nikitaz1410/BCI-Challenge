@@ -28,18 +28,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import GroupKFold
-from sklearn.metrics import confusion_matrix, accuracy_score, balanced_accuracy_score, f1_score, brier_score_loss
-from sklearn.preprocessing import label_binarize
+from sklearn.metrics import confusion_matrix
 
 # Evaluation
-from bci.evaluation.metrics import MetricsTable, compile_metrics, compute_ece
+from bci.evaluation.metrics import MetricsTable, compile_metrics
 
 # Data Acquisition
 from bci.loading.loading import (
-    load_physionet_data,
     load_target_subject_data,
     create_subject_train_set,
-    create_subject_test_set
 )
 
 # Preprocessing
@@ -100,105 +97,6 @@ def extract_features(signals, sfreq):
 
 
 # =============================================================================
-# Offline Adaptation Simulation
-# =============================================================================
-def simulate_offline_adaptation(combined_lda, X_test, y_test, sfreq):
-    """
-    Simulate online adaptation in an offline setting.
-
-    Processes test samples one by one:
-    1. Predict (before adaptation)
-    2. Update model with true label (after seeing the label) - ONLY if prediction was wrong
-    3. Compare accuracy with and without adaptation
-
-    Parameters:
-    -----------
-    combined_lda : CombinedAdaptiveLDA
-        The trained classifier (will be modified in place)
-    X_test : np.ndarray
-        Test signals, shape (n_samples, n_channels, n_times)
-    y_test : np.ndarray
-        True labels, shape (n_samples,)
-    sfreq : float
-        Sampling frequency
-
-    Returns:
-    --------
-    results : dict
-        Contains predictions, accuracies, and adaptation statistics
-    """
-    n_samples = len(X_test)
-    predictions_no_adapt = np.zeros(n_samples, dtype=int)
-    predictions_with_adapt = np.zeros(n_samples, dtype=int)
-    
-    # Track per-class accuracy changes
-    class_acc_no_adapt = {0: [], 1: [], 2: []}
-    class_acc_with_adapt = {0: [], 1: [], 2: []}
-
-    print(f"\n  Simulating adaptation on {n_samples} test samples...")
-    print(f"  Strategy: Only adapt when prediction is wrong (prevents over-adaptation)")
-
-    for i in range(n_samples):
-        # Extract features for this sample
-        features = extract_features(X_test[i:i+1], sfreq)  # Shape: (1, n_features)
-
-        # Predict BEFORE adaptation (for comparison)
-        pred = combined_lda.predict(features)[0]
-        predictions_no_adapt[i] = pred
-        predictions_with_adapt[i] = pred  # Same prediction initially
-
-        true_label = int(y_test[i])
-        
-        # Only update if prediction was wrong (prevents over-adaptation to correct predictions)
-        # This is more realistic - in real online use, you'd only adapt when you get feedback
-        # that you were wrong
-        if pred != true_label:
-            combined_lda.update(true_label, features[0])
-            # Re-predict after update
-            pred_after = combined_lda.predict(features)[0]
-            predictions_with_adapt[i] = pred_after
-
-        # Track per-class accuracy
-        class_acc_no_adapt[true_label].append(predictions_no_adapt[i] == true_label)
-        class_acc_with_adapt[true_label].append(predictions_with_adapt[i] == true_label)
-
-        # Progress update
-        if (i + 1) % 100 == 0:
-            acc_so_far = (predictions_with_adapt[:i+1] == y_test[:i+1]).mean()
-            print(f"    Processed {i+1}/{n_samples} samples, running acc: {acc_so_far:.3f}")
-
-    # Now re-predict with the adapted model for comparison
-    # (In real online use, adaptation happens AFTER prediction, so this shows
-    #  what would happen if we processed the same data with the adapted model)
-    features_all = extract_features(X_test, sfreq)
-    predictions_post_adapt = combined_lda.predict(features_all)
-
-    acc_no_adapt = (predictions_no_adapt == y_test).mean()
-    acc_with_adapt = (predictions_with_adapt == y_test).mean()
-    acc_post_adapt = (predictions_post_adapt == y_test).mean()
-
-    stats = combined_lda.get_stats()
-
-    # Per-class accuracy
-    per_class_no_adapt = {c: np.mean(class_acc_no_adapt[c]) if len(class_acc_no_adapt[c]) > 0 else 0.0 
-                          for c in [0, 1, 2]}
-    per_class_with_adapt = {c: np.mean(class_acc_with_adapt[c]) if len(class_acc_with_adapt[c]) > 0 else 0.0 
-                            for c in [0, 1, 2]}
-
-    return {
-        'predictions_no_adapt': predictions_no_adapt,
-        'predictions_with_adapt': predictions_with_adapt,
-        'predictions_post_adapt': predictions_post_adapt,
-        'acc_no_adapt': acc_no_adapt,
-        'acc_with_adapt': acc_with_adapt,
-        'acc_post_adapt': acc_post_adapt,
-        'update_stats': stats,
-        'per_class_no_adapt': per_class_no_adapt,
-        'per_class_with_adapt': per_class_with_adapt
-    }
-
-
-# =============================================================================
 # Main
 # =============================================================================
 if __name__ == "__main__":
@@ -233,8 +131,6 @@ if __name__ == "__main__":
     # Initialize variables - set all seeds for reproducibility
     random.seed(config.random_state)
     np.random.seed(config.random_state)
-    # Note: GroupKFold doesn't use random_state, but grouping is deterministic based on session IDs
-    metrics_table = MetricsTable()
 
     # Force 11-fold CV (override config, matching baseline)
     # Note: GroupKFold will be recreated after we know the actual number of groups
@@ -250,11 +146,8 @@ if __name__ == "__main__":
     test_data_source_path = current_wd / "data" / "eeg" / config.target
     test_data_target_path = current_wd / "data" / "datasets" / config.target
 
-    use_test = False  # Baseline approach: use all data for CV only (no separate test set)
-    use_adaptation_simulation = True  # Whether to simulate offline adaptation
-
     # ==========================================================================
-    # 1. Load All Target Subject Data 
+    # 1. Load All Target Subject Data
     # ==========================================================================
     print("\n" + "=" * 60)
     print("LOADING DATA")
@@ -287,16 +180,7 @@ if __name__ == "__main__":
     print(f"Created training set with {len(x_raw_train)} files (all files used for CV only, matching baseline approach).")
 
     # ==========================================================================
-    # 3. Test Set (Not Used - All Data for CV)
-    # ==========================================================================
-    # No separate test set - all 23 files are used for CV
-    x_raw_test = []
-    events_test = []
-    test_filenames = []
-    sub_ids_test = []
-
-    # ==========================================================================
-    # 4. Preprocess Training Data: Filter, Epoch, Add Metadata
+    # 3. Preprocess Training Data: Filter, Epoch, Add Metadata
     # ==========================================================================
     print("\n" + "=" * 60)
     print("PREPROCESSING TRAINING DATA")
@@ -559,244 +443,7 @@ if __name__ == "__main__":
     print(f"Stage info: {clf.get_stage_info()}")
 
     # ==========================================================================
-    # 7. Evaluate on Holdout Test Set
-    # ==========================================================================
-    if use_test and len(x_raw_test) > 0:
-        print("\n" + "=" * 60)
-        print("EVALUATION ON HOLDOUT TEST SET")
-        print("=" * 60)
-
-        # Preprocess test data
-        all_test_epochs_list = []
-        for raw, events, sub_id in zip(x_raw_test, events_test, sub_ids_test):
-            # FILTERING: Filter the data by using the mne apply function method
-            filtered_raw = raw.copy()
-            filtered_raw.apply_function(filter_obj.apply_filter_offline)
-
-            # CHANNEL REMOVAL: Remove unnecessary channels like noise sources
-            filtered_raw.drop_channels(config.remove_channels)
-
-            # Create the epochs for testing
-            epochs = mne.Epochs(
-                filtered_raw,
-                events,
-                event_id=target_event_id,
-                tmin=0.3,  # Start at 0.3 to avoid VEP/ERP due to the Visual Cues (match training)
-                tmax=4.0,
-                preload=True,
-                baseline=None,
-            )
-            all_test_epochs_list.append(epochs)
-
-        combined_test_epochs = mne.concatenate_epochs(all_test_epochs_list)
-        test_labels = combined_test_epochs.events[:, 2]
-
-        # Window test data
-        # Create dummy groups for test data (one per epoch)
-        test_groups = np.arange(len(combined_test_epochs))
-        X_test_windows, y_test_windows, _ = epochs_to_windows(
-            combined_test_epochs,
-            test_groups,
-            window_size=config.window_size,
-            step_size=config.step_size,
-        )
-        # Labels are already [0, 1, 2] from epochs_to_windows, no mapping needed
-
-        # Extract features
-        test_features = extract_features(X_test_windows, config.fs)
-
-        # Predict (without adaptation first)
-        start_eval = time.time() * 1000
-        test_preds = clf.predict(test_features)
-        end_eval = time.time() * 1000
-        test_probs = clf.predict_proba(test_features)
-
-        # Compute metrics
-        test_metrics = compile_metrics(
-            y_true=y_test_windows,
-            y_pred=test_preds,
-            y_prob=test_probs,
-            timings={
-                "train_time": end_train - start_train,
-                "infer_latency": (end_eval - start_eval) / max(1, len(y_test_windows)),
-                "total_latency": (end_eval - start_eval) / max(1, len(y_test_windows)),
-                "filter_latency": filter_obj.get_filter_latency(),
-            },
-            n_classes=3,
-        )
-        test_metrics["Dataset"] = "Test (No Adaptation)"
-        metrics_table.add_rows([test_metrics])
-
-        # =======================================================================
-        # 8. Offline Adaptation Simulation
-        # =======================================================================
-        if use_adaptation_simulation:
-            print("\n" + "=" * 60)
-            print("OFFLINE ADAPTATION SIMULATION")
-            print("=" * 60)
-
-            # Create a fresh copy for adaptation simulation
-            clf_adapt = CombinedAdaptiveLDA(
-                confidence_threshold=0.7,
-                ensemble_weight=0.5,
-                move_threshold=0.6,
-                reg=1e-3,
-                shrinkage_alpha=0.05,
-                uc_mu=0.4 * 2**-7,
-                use_adaptive_lr=True,
-                use_improved_composition=True
-            )
-            clf_adapt.fit(train_features_all, y_train_clean)
-
-            # Run adaptation simulation
-            adapt_results = simulate_offline_adaptation(
-                clf_adapt, X_test_windows, y_test_windows, config.fs
-            )
-
-            print(f"\n  Results:")
-            print(f"    Accuracy (no adaptation):       {adapt_results['acc_no_adapt']:.4f}")
-            print(f"    Accuracy (with adaptation):     {adapt_results['acc_with_adapt']:.4f}")
-            print(f"    Accuracy (post-adaptation):     {adapt_results['acc_post_adapt']:.4f}")
-            print(f"    Updates performed:              {adapt_results['update_stats'].get('n_updates', 'N/A')}")
-            
-            # Display model selection stats if available
-            if 'n_hybrid_selected_' in adapt_results['update_stats']:
-                print(f"    HybridLDA selected:            {adapt_results['update_stats'].get('n_hybrid_selected_', 0)}")
-                print(f"    Core LDA selected:            {adapt_results['update_stats'].get('n_core_selected_', 0)}")
-                print(f"    Ensemble used:                {adapt_results['update_stats'].get('n_ensemble_used_', 0)}")
-            
-            # Display per-class accuracy if available
-            if 'per_class_no_adapt' in adapt_results:
-                print(f"\n    Per-class accuracy (no adaptation):")
-                for c, acc in adapt_results['per_class_no_adapt'].items():
-                    class_name = ['Rest', 'Left', 'Right'][c]
-                    print(f"      {class_name}: {acc:.4f}")
-                print(f"    Per-class accuracy (with adaptation):")
-                for c, acc in adapt_results['per_class_with_adapt'].items():
-                    class_name = ['Rest', 'Left', 'Right'][c]
-                    print(f"      {class_name}: {acc:.4f}")
-
-            # Add adapted metrics to table
-            adapted_metrics = test_metrics.copy()
-            adapted_metrics["Dataset"] = "Test (With Adaptation)"
-            adapted_metrics["Acc."] = adapt_results['acc_post_adapt']
-            metrics_table.add_rows([adapted_metrics])
-
-    # ==========================================================================
-    # 9. Final Summary Table: Metrics With and Without Adaptation
-    # ==========================================================================
-    print("\n" + "=" * 80)
-    print("FINAL EVALUATION SUMMARY: WITH AND WITHOUT ADAPTATION")
-    print("=" * 80)
-    
-    summary_data = []
-    
-    # CV Results (No Adaptation)
-    if 'cv_metrics_list' in locals() and len(cv_metrics_list) > 0:
-        cv_mean_metrics = {}
-        cv_std_metrics = {}
-        metric_keys = ["Acc.", "B. Acc.", "F1 Score", "ECE", "Brier"]
-        
-        for key in metric_keys:
-            values = [m[key] for m in cv_metrics_list if key in m]
-            if values:
-                cv_mean_metrics[key] = np.mean(values)
-                cv_std_metrics[key] = np.std(values)
-            else:
-                cv_mean_metrics[key] = 0.0
-                cv_std_metrics[key] = 0.0
-        
-        summary_data.append({
-            "Phase": "Cross-Validation (No Adaptation)",
-            "Acc.": f"{cv_mean_metrics.get('Acc.', 0):.4f} +/- {cv_std_metrics.get('Acc.', 0):.4f}",
-            "B. Acc.": f"{cv_mean_metrics.get('B. Acc.', 0):.4f} +/- {cv_std_metrics.get('B. Acc.', 0):.4f}",
-            "F1 Score": f"{cv_mean_metrics.get('F1 Score', 0):.4f} +/- {cv_std_metrics.get('F1 Score', 0):.4f}",
-            "ECE": f"{cv_mean_metrics.get('ECE', 0):.4f} +/- {cv_std_metrics.get('ECE', 0):.4f}",
-            "Brier": f"{cv_mean_metrics.get('Brier', 0):.4f} +/- {cv_std_metrics.get('Brier', 0):.4f}",
-        })
-    
-    # Test Results (No Adaptation) - Only if test set is enabled
-    if use_test and len(x_raw_test) > 0 and 'test_metrics' in locals():
-        summary_data.append({
-            "Phase": "Test (No Adaptation)",
-            "Acc.": f"{test_metrics.get('Acc.', 0):.4f}",
-            "B. Acc.": f"{test_metrics.get('B. Acc.', 0):.4f}",
-            "F1 Score": f"{test_metrics.get('F1 Score', 0):.4f}",
-            "ECE": f"{test_metrics.get('ECE', 0):.4f}",
-            "Brier": f"{test_metrics.get('Brier', 0):.4f}",
-        })
-        
-        # Test Results (With Adaptation)
-        if use_adaptation_simulation and 'adapt_results' in locals():
-            y_true = y_test_windows
-            y_pred_with_adapt = adapt_results['predictions_post_adapt']
-            
-            # Compute all metrics for adapted version
-            acc_adapt = accuracy_score(y_true, y_pred_with_adapt)
-            bacc_adapt = balanced_accuracy_score(y_true, y_pred_with_adapt)
-            f1_adapt = f1_score(y_true, y_pred_with_adapt, average='weighted')
-            
-            # Get probabilities for adapted predictions (re-predict with adapted model)
-            test_features_adapt = extract_features(X_test_windows, config.fs)
-            test_probs_adapt = clf_adapt.predict_proba(test_features_adapt)
-            
-            # Compute ECE and Brier for adapted version
-            ece_adapt = compute_ece(y_true, test_probs_adapt, n_bins=10)
-            # Brier score for multi-class (one-vs-rest)
-            y_true_bin = label_binarize(y_true, classes=[0, 1, 2])
-            brier_adapt = np.mean([brier_score_loss(y_true_bin[:, i], test_probs_adapt[:, i]) 
-                                   for i in range(3)])
-            
-            # Calculate improvement
-            acc_improvement = acc_adapt - test_metrics.get('Acc.', 0)
-            acc_improvement_str = f"{acc_improvement:+.4f}" if acc_improvement != 0 else "0.0000"
-            
-            summary_data.append({
-                "Phase": f"Test (With Adaptation) [Δ={acc_improvement_str}]",
-                "Acc.": f"{acc_adapt:.4f}",
-                "B. Acc.": f"{bacc_adapt:.4f}",
-                "F1 Score": f"{f1_adapt:.4f}",
-                "ECE": f"{ece_adapt:.4f}",
-                "Brier": f"{brier_adapt:.4f}",
-            })
-    
-    # Display summary table using MetricsTable (matching baseline format)
-    if summary_data:
-        summary_table = MetricsTable()
-        summary_table.add_rows(summary_data)
-        summary_table.display()
-        
-        print("=" * 80)
-        print(f"Cross-Validation: {n_folds_actual}-fold (session-wise grouping)")
-        print(f"Random State: {config.random_state} (for reproducibility)")
-        if use_adaptation_simulation and 'adapt_results' in locals():
-            print(f"Adaptation Updates: {adapt_results['update_stats'].get('n_updates', 'N/A')}")
-        print("=" * 80)
-        
-        # Save summary to CSV
-        summary_df = pd.DataFrame(summary_data)
-        summary_path = current_wd / "combined_adaptive_lda_results_summary.csv"
-        summary_df.to_csv(summary_path, index=False)
-        print(f"\nResults summary saved to: {summary_path}")
-
-        # Save test confusion matrix (only if test set was used)
-        if use_test and len(x_raw_test) > 0 and 'test_preds' in locals() and 'y_test_windows' in locals():
-            test_cm = confusion_matrix(y_test_windows, test_preds)
-            plt.figure(figsize=(8, 6))
-            sns.heatmap(test_cm, annot=True, fmt='d', cmap='Greens',
-                        xticklabels=['Rest', 'Left', 'Right'],
-                        yticklabels=['Rest', 'Left', 'Right'])
-            plt.xlabel('Predicted', fontsize=12, fontweight='bold')
-            plt.ylabel('True', fontsize=12, fontweight='bold')
-            plt.title('CombinedAdaptiveLDA Test - Confusion Matrix', fontsize=14, fontweight='bold')
-            plt.tight_layout()
-            test_cm_path = current_wd / "combined_adaptive_lda_test_confusion_matrix.png"
-            plt.savefig(test_cm_path, dpi=150)
-            print(f"\nTest confusion matrix saved: {test_cm_path}")
-            plt.close()
-
-    # ==========================================================================
-    # 9. Save the Trained Model
+    # 7. Save the Trained Model
     # ==========================================================================
     model_path = current_wd / "resources" / "models" / "combined_adaptive_lda.pkl"
     model_path.parent.mkdir(parents=True, exist_ok=True)
