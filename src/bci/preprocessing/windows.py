@@ -18,7 +18,7 @@ from typing import Tuple
 
 
 def extract_overlapping_windows(
-    eeg: np.ndarray, window_size: int = 250, step_size: int = 16
+    eeg: np.ndarray, window_size: int = 250, step_size: int = 32
 ) -> np.ndarray:
     """Extract overlapping time windows from a single trial array.
 
@@ -66,7 +66,7 @@ def extract_overlapping_windows(
 
 
 def epochs_to_windows(
-    epochs: mne.Epochs, groups: np.ndarray, window_size: int = 250, step_size: int = 16
+    epochs: mne.Epochs, groups: np.ndarray, window_size: int = 250, step_size: int = 32
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert MNE `Epochs` into overlapping windows and labels.
 
@@ -119,7 +119,7 @@ def epochs_windows_from_fold(
     train_idx: np.ndarray,
     val_idx: np.ndarray,
     window_size: int = 250,
-    step_size: int = 16,
+    step_size: int = 32,
 ) -> dict:
     """Create windowed datasets for a train/val fold from an MNE Epochs object.
 

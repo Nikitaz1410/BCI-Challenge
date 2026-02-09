@@ -12,10 +12,9 @@ This model implements an adaptive Linear Discriminant Analysis classifier that:
 - Handles non-stationary EEG signals during real-time BCI control
 
 Markers used:
-- 0: unknown
-- 1: rest
-- 2: left_hand
-- 3: right_hand
+- 0: rest
+- 1: left_hand
+- 2: right_hand
 
 Parameters are read from bci_config.yaml:
 - fs: sampling frequency
@@ -93,7 +92,7 @@ class AdaptiveLDA:
             Raw EEG signals (already filtered)
         y : np.ndarray
             Shape (n_trials,)
-            Class labels (1: rest, 2: left_hand, 3: right_hand)
+            Class labels (0: rest, 1: left_hand, 2: right_hand)
         """
         # Extract PSD features
         X = extract_psd_features(

@@ -53,4 +53,4 @@ replay_subject_id: "Dino-7" # Options: Phy-### (for Physionet data), Dino-## (Pl
 ip: "127.0.0.1" # IP address for UDP communication to the dino game
 port: 5005 # Port for the UDP communication to the dino game
 classification_threshold: 0.4 # Value between 0 and 1 to determine the confidence threshold for classification
-classification_buffer: 10 # Number of classifications to be buffered for majority voting
+classification_buffer: 10 # Number of classifications to be buffered for moving-average smoothing

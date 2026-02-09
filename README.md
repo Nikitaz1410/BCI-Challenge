@@ -182,6 +182,7 @@ BCI-Challenge/
 ├── src/bci/
 │   ├── main_offline_*.py              # Offline training + LOSO CV
 │   │   ├── main_offline_Baseline.py       # CSP&BP + LDA/SVM/LR/RF
+│   │   ├── main_offline_Baseline_physionet_to_target.py  # PhysioNet training then testing on target (performed worse then LOSO on target directly)
 │   │   ├── main_offline_Riemann.py        # Riemannian geometry
 │   │   ├── main_offline_MIRepNet.py       # MIRepNet foundation model
 │   │   ├── main_offline_AdaptiveLDA.py    # Combined Adaptive LDA
@@ -192,16 +193,18 @@ BCI-Challenge/
 │   │   ├── main_online_Riemann.py
 │   │   ├── main_online_MIRepNet.py
 │   │   ├── main_online_MIRepNet_adaptive.py
+│   │   ├── main_online_Advanced.py
 │   │   └── main_online_AdaptiveLDA.py
 │   │
 │   ├── models/                        # Standardized Model Wrappers with the same API: fit(), predict(), predict_proba(), save()/load()
 │   │   ├── Baseline.py                # CSP + bandpower + LDA/SVM/LR/RF
 │   │   ├── riemann.py                 # Riemannian FgMDM with adaptive recentering
 │   │   ├── MIRepNet.py                # MIRepNet numpy wrapper
+│   │   ├── AdaptiveLDA.py             # Adaptive LDA with online parameter updates
+│   │   ├── Advanced_Baselines.py      # Deep Learning Baselines Wrapper
 │   │   ├── MIRepNet/                  # MIRepNet core (architectures + weights)
 │   │   │   └── model/                 # EEGNet, ShallowConvNet, DeepConvNet, etc.
-│   │   ├── adaptive_lda_modules/      # Combined Adaptive LDA components
-│   │   └── Advanced_Baselines.py      # Deep Learning Baselines Wrapper
+│   │   └── adaptive_lda_modules/      # Combined Adaptive LDA components
 │   │
 │   ├── preprocessing/
 │   │   ├── filters.py                 # Bandpass filtering (offline & stateful online)
@@ -297,8 +300,7 @@ uv run src/bci/main_online_Riemann.py       # or any main_online_*.py
 
 ```bash
 # 1. Set online: "dino" in bci_config.yaml
-# 2. Start the Dino game
-uv run src/bci/Game/DinoGamev2.py
+# 2. Start the Dino game (Chrome Dino Game implementation not included)
 
 # 3. Start the EEG stream (replay or real hardware)
 uv run src/bci/replay.py
@@ -331,7 +333,7 @@ channels: [Fp1, Fp2, F3, Fz, F4, T7, C3, Cz, C4, T8, P3, Pz, P4, PO7, PO8, Oz]
 remove_channels: [Fp1, Fp2, T7, T8, Oz]
 
 # Cross-Validation
-n_folds: 3              # Default CV folds
+n_folds: 3              # Fallback CV folds (LOSO uses session count instead)
 random_state: 42
 
 # Online Mode

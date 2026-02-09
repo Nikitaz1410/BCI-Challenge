@@ -73,14 +73,14 @@ This implementation combines two LDA classifiers with online adaptation for real
 
 ### Offline Training
 ```bash
-python src/bci/main_offline_AdaptiveLDA.py
+uv run src/bci/main_offline_AdaptiveLDA.py
 ```
-- Performs 11-fold cross-validation (session-wise grouping)
-- Saves model to `resources/models/combined_adaptive_lda.pkl`
+- Performs session-wise Leave-One-Session-Out (LOSO) cross-validation
+- Saves model to a `.pkl` file
 
 ### Online Classification
 ```bash
-python src/bci/main_online_AdaptiveLDA.py
+uv run src/bci/main_online_AdaptiveLDA.py
 ```
 - Requires LSL streams (EEG + Markers)
 - Adapts in real-time after each trial
@@ -111,11 +111,15 @@ For each channel: `feature = log(bandpower)`
 
 ```
 adaptive_lda_modules/
-├── combined_adaptive_lda.py   # Main classifier (CombinedAdaptiveLDA)
-├── hybrid_lda.py              # 2-stage hierarchical LDA
-├── lda_core.py                # Standard 3-class LDA
-├── feature_extraction.py      # Log-bandpower extraction
-└── README.md                  # This file
+├── combined_adaptive_lda.py           # Main classifier (CombinedAdaptiveLDA)
+├── combined_adaptive_lda_wrapper.py   # Pipeline wrapper for CombinedAdaptiveLDA
+├── enhanced_adaptive_lda.py           # Enhanced variant with extra features
+├── hybrid_lda.py                      # 2-stage hierarchical LDA
+├── hybrid_lda_wrapper.py              # Pipeline wrapper for HybridLDA
+├── lda_core.py                        # Standard 3-class LDA
+├── adaptive_update.py                 # Online mean/covariance update functions
+├── feature_extraction.py              # Log-bandpower / PSD extraction
+└── README_AdaptiveLDA.md              # This file
 ```
 
 ---
