@@ -4,13 +4,13 @@
 >
 > Chair of Engineering Resilient Cognitive Systems, TUM School of Computation, Information and Technology
 
-**Team:** Nikita Zubairov, Iustin Curcean, Amal Ben Slimen, Daria Bondareva
+**Team:** Nikita Zubairov, Iustin Curcean, Amal Ben Slimen and Daria Bondareva
 
 ---
 
 ## Overview
 
-This project implements a complete real-time Brain-Computer Interface (BCI) system for decoding EEG Motor Imagery (MI) signals into three classes — **Left Hand**, **Right Hand**, and **Rest** — and using the decoded commands to play the Chrome Dino Game in real time.
+This project implements a complete real-time Brain-Computer Interface (BCI) system for decoding EEG Motor Imagery (MI) signals into three classes — **Left Hand**, **Right Hand**, and **Rest** — and using the decoded commands to play the Chrome Dino Game in real time (Chrome Dino Game implementation not included).
 
 Key challenges addressed:
 - **Non-stationarity** of EEG signals across sessions
@@ -246,19 +246,33 @@ BCI-Challenge/
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Clone the repository
-git clone https://github.com/<your-org>/BCI-Challenge.git
+git clone https://github.com/Nikitaz1410/BCI-Challenge.git
 cd BCI-Challenge
 
 # 3. Sync dependencies
 uv sync
 ```
 
+### Data
+
+Place your data under the project root as follows:
+
+| Purpose | Path | Contents |
+|--------|------|----------|
+| **Target subject (raw)** | `data/eeg/sub/` | Raw `.xdf` recordings from the target subject. The folder name (`sub`) must match `target` in `bci_config.yaml`. |
+| **Target subject (processed)** | `data/datasets/sub/` | Processed `.fif` and events; created automatically from the raw XDF in `data/eeg/sub/` on first run. |
+| **Physionet MI** | `data/datasets/physionet/` | Downloaded automatically by the loader when using Physionet (e.g. for replay with `replay_subject_id: "Phy-###"` or for pre-training). |
+
+You only need to provide the raw XDF files in `data/eeg/sub/` (or the folder name set by `target` in the config). All other dataset directories are created and filled by the scripts as needed.
+
+
+
 ### Offline Training
 
 Train and evaluate models with LOSO cross-validation:
 
 ```bash
-uv run src/bci/main_offline_Baseline.py      # CSP + LDA/SVM/LR/RF
+uv run src/bci/main_offline_Baseline.py       # CSP + LDA/SVM/LR/RF
 uv run src/bci/main_offline_Riemann.py        # Riemannian classifier
 uv run src/bci/main_offline_MIRepNet.py       # MIRepNet foundation model
 uv run src/bci/main_offline_AdaptiveLDA.py    # Combined Adaptive LDA
@@ -365,7 +379,7 @@ Full dependency list with versions in `pyproject.toml`. Install with `uv sync`.
 
 ## Acknowledgements
 
-We thank **Delfina Taskin-Espinoza** and **Moru Liu** for organizing and instructing this course (*Praktikum: Developing Reliable Decoders for a Brain-Computer Interface*).
+Many thanks to **Delfina Taskin Espinoza** and **Moru Liu** for organizing and instructing this course (*Praktikum: Developing Reliable Decoders for a Brain-Computer Interface*) and closely supporting our project.
 
 ---
 
